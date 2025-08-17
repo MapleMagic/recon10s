@@ -3,7 +3,7 @@ import subprocess
 import sys
 
 # List of required packages
-required_packages = ["numpy", "matplotlib", "cartopy"]
+required_packages = ["numpy", "matplotlib", "cartopy", "requests"]
 
 def install_package(package):
     """Install a package using pip"""
@@ -25,3 +25,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
