@@ -494,7 +494,7 @@ path_browse_btn = ttk.Button(main_tab, text="Browse...", style="Main.TButton", c
 path_browse_btn.grid(row=1, column=2, sticky="w", padx=padx, pady=pady)
 
 ttk.Label(main_tab, text="Mission ID:", style="Main.TLabel").grid(row=2, column=0, sticky="e", padx=padx, pady=pady)
-mission_var = tk.StringVar(value="NOAA3 0605A ERIN")
+mission_var = tk.StringVar(value="Put a mission name here.")
 mission_entry = tk.Entry(main_tab, textvariable=mission_var, width=72)
 mission_entry.grid(row=2, column=1, columnspan=2, sticky="w", padx=padx, pady=pady)
 
@@ -662,3 +662,4 @@ settings_tab.columnconfigure(1, weight=1)
 url_entry.focus_set()
 
 root.mainloop()
+
