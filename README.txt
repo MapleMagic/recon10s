@@ -22,7 +22,7 @@ Installation Instructions
 1. Install Python 3.9+ (recommended).
 2. Install required packages with pip:
 
-   pip install numpy matplotlib cartopy
+   pip install numpy matplotlib cartopy requests
    
    There is also a file called "install_deps.py" in case you don't feel like loading up Command Prompt.
 
@@ -58,3 +58,4 @@ Getting Recon Data
 NOAA/AOML has IWG1 (Aircraft Data) files in their backend in this directory. It is technically private though, as it's marked as Controlled Unclassified Information (CUI), so use it carefully and at your own risk:  
 
 - https://seb.omao.noaa.gov/pub/flight/aamps_ingest/iwg1/
+
