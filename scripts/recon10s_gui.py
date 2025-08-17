@@ -359,7 +359,7 @@ path_browse_btn.grid(row=1, column=2, sticky="w", padx=padx, pady=pady)
 
 # Row 2: Mission
 ttk.Label(frame, text="Mission ID:", style="Dark.TLabel").grid(row=2, column=0, sticky="e", padx=padx, pady=pady)
-mission_var = tk.StringVar(value="NOAA3 0605A ERIN")
+mission_var = tk.StringVar(value="Put a recon mission's name here.")
 mission_entry = tk.Entry(frame, textvariable=mission_var, width=60, bg=ENTRY_BG, fg=ENTRY_FG, insertbackground=ENTRY_FG)
 mission_entry.grid(row=2, column=1, columnspan=2, sticky="w", padx=padx, pady=pady)
 
@@ -438,3 +438,4 @@ root.resizable(True, True)
 url_entry.focus_set()
 
 root.mainloop()
+
