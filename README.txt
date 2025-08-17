@@ -11,6 +11,7 @@ Required Python Packages
 - numpy
 - matplotlib
 - cartopy
+- requests
 - tkinter (usually included with Python installations)
 - concurrent.futures (part of the Python standard library)
 
@@ -55,4 +56,5 @@ Getting Recon Data
 ----------------------------
 
 NOAA/AOML has IWG1 (Aircraft Data) files in their backend in this directory. It is technically private though, as it's marked as Controlled Unclassified Information (CUI), so use it carefully and at your own risk:  
+
 - https://seb.omao.noaa.gov/pub/flight/aamps_ingest/iwg1/
