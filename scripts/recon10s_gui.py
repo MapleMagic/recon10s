@@ -9,7 +9,18 @@ import queue
 import json
 import sys
 import subprocess
-from typing import Optional
+import io
+import zipfile
+import webbrowser
+from typing import Optional, List, Tuple, Dict, Any
+
+# HTTP helper libs (optional requests)
+try:
+    import requests
+except Exception:
+    requests = None
+import urllib.request
+import urllib.error
 
 # local project modules (expected to exist in same folder)
 import recon10s
@@ -17,6 +28,7 @@ import recon10s_plot
 
 # SETTINGS file path (next to this script)
 SETTINGS_FILE = os.path.join(os.path.dirname(__file__), "recon10s_settings.json")
+VERSION_FILE = os.path.join(os.path.dirname(__file__), "VERSION")
 
 # -------------------------
 # Simple validators
@@ -52,7 +64,9 @@ def validate_time_string(s: str) -> bool:
 DEFAULTS = {
     "coord_format": "decimal",   # "decimal" or "dms"
     "gui_theme": "dark",         # "dark" or "light"
-    "plot_theme": "dark"         # "dark" or "light"
+    "plot_theme": "dark",        # "dark" or "light"
+    "github_repo": "MapleMagic/recon10s",
+    "current_version": "v1.1.0"
 }
 settings = DEFAULTS.copy()
 
@@ -203,34 +217,93 @@ def choose_hdob_and_plot():
         messagebox.showerror("Plot error", f"Plot failed:\n{exc}")
 
 
+# -------------------------
+# Robust time helper & compute_counts (uses recon10s or recon10s_plot helpers if present)
+# -------------------------
+def _time_to_seconds_fallback(time_str: Optional[str]) -> Optional[int]:
+    """
+    Convert user time input (HH:MM, H:MM, HHMM, HHMMSS) to seconds-since-midnight.
+    Try recon10s._time_input_to_seconds, then recon10s_plot._time_input_to_seconds/_hhmm_to_seconds.
+    Otherwise local parse. Return None for empty input.
+    """
+    if time_str is None:
+        return None
+    s = time_str.strip()
+    if s == "":
+        return None
+
+    # candidate helper functions
+    candidates = [
+        getattr(recon10s, "_time_input_to_seconds", None),
+        getattr(recon10s_plot, "_time_input_to_seconds", None),
+        getattr(recon10s_plot, "_hhmm_to_seconds", None),
+        getattr(recon10s_plot, "_hhmm_to_seconds", None),
+    ]
+    for fn in candidates:
+        if callable(fn):
+            try:
+                return fn(s)
+            except Exception:
+                # helper exists but failed; fall back to local parse
+                break
+
+    # local parse
+    m = _time_colon_re.match(s)
+    if m:
+        hh = int(m.group(1)); mm = int(m.group(2)); ss = int(m.group(3)) if m.group(3) else 0
+        if 0 <= hh < 24 and 0 <= mm < 60 and 0 <= ss < 60:
+            return hh * 3600 + mm * 60 + ss
+        raise ValueError(f"Time out of range: {s}")
+    m2 = _time_plain_re.match(s)
+    if m2:
+        token = m2.group(1)
+        if len(token) == 4:
+            hh = int(token[:2]); mm = int(token[2:4]); ss = 0
+        else:
+            hh = int(token[:2]); mm = int(token[2:4]); ss = int(token[4:6])
+        if 0 <= hh < 24 and 0 <= mm < 60 and 0 <= ss < 60:
+            return hh * 3600 + mm * 60 + ss
+        raise ValueError(f"Time out of range: {s}")
+    raise ValueError(f"Invalid time string: {s}")
+
+
 def compute_counts(hdob_file: str, start_utc: Optional[str], end_utc: Optional[str]) -> tuple:
+    """
+    Parse the HDOB file using recon10s_plot.parse_hdob_file and count total + filtered records.
+    Uses _time_to_seconds_fallback for robust parsing.
+    Returns (n_total, n_in_window).
+    """
     times, times_tup, lats, lons, mslps, wind_dirs, wind_spds = recon10s_plot.parse_hdob_file(hdob_file)
     n_total = len(times)
     if n_total == 0:
         return 0, 0
-    secs = [hh*3600 + mm*60 + ss for (hh, mm, ss) in times_tup]
+
     try:
-        start_sec = recon10s_plot._time_input_to_seconds(start_utc) if getattr(recon10s_plot, "_time_input_to_seconds", None) else None
+        start_sec = _time_to_seconds_fallback(start_utc) if start_utc else None
     except Exception:
         start_sec = None
     try:
-        end_sec = recon10s_plot._time_input_to_seconds(end_utc) if getattr(recon10s_plot, "_time_input_to_seconds", None) else None
+        end_sec = _time_to_seconds_fallback(end_utc) if end_utc else None
     except Exception:
         end_sec = None
+
     if start_sec is None and end_sec is None:
         return n_total, n_total
+
     count_in = 0
-    for s in secs:
+    for (hh, mm, ss) in times_tup:
+        sec = hh * 3600 + mm * 60 + ss
         keep = True
         if start_sec is not None and end_sec is not None:
             if start_sec <= end_sec:
-                keep = (start_sec <= s <= end_sec)
+                keep = (start_sec <= sec <= end_sec)
             else:
-                keep = (s >= start_sec or s <= end_sec)
+                # wrap around midnight
+                keep = (sec >= start_sec or sec <= end_sec)
         elif start_sec is not None:
-            keep = (s >= start_sec)
+            keep = (sec >= start_sec)
         elif end_sec is not None:
-            keep = (s <= end_sec)
+            keep = (sec <= end_sec)
         if keep:
             count_in += 1
     return n_total, count_in
@@ -259,7 +332,7 @@ def on_time_entry_change(*_args):
 def _set_controls_state(enabled: bool):
     state = "normal" if enabled else "disabled"
     widgets = (url_entry, path_entry, path_browse_btn, mission_entry, date_entry, interval_menu, out_entry, out_browse_btn,
-               start_entry, end_entry, run_button, plot_chk, legend_chk, plot_existing_btn)
+               start_entry, end_entry, run_button, plot_chk, legend_chk, plot_existing_btn, check_updates_btn)
     for w in widgets:
         try:
             w.config(state=state)
@@ -441,6 +514,206 @@ def apply_gui_theme(theme_name: str):
 
 
 # -------------------------
+# Update check + installer (GitHub)
+# -------------------------
+GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/{repo}/releases/latest"
+DEFAULT_REPO = settings.get("github_repo", "MapleMagic/recon10s")
+DEFAULT_LOCAL_VERSION = settings.get("current_version", "v1.1.0")
+
+
+def _discover_local_version() -> str:
+    # 1) settings
+    v = settings.get("current_version")
+    if v:
+        return str(v).strip()
+    # 2) VERSION file
+    try:
+        if os.path.exists(VERSION_FILE):
+            with open(VERSION_FILE, "r", encoding="utf-8", errors="ignore") as fh:
+                txt = fh.read().strip().splitlines()
+                if txt:
+                    return txt[0].strip()
+    except Exception:
+        pass
+    return DEFAULT_LOCAL_VERSION
+
+
+def _fetch_latest_release_json(repo: str, timeout: float = 8.0) -> Optional[Dict[str, Any]]:
+    url = GITHUB_LATEST_RELEASE_API.format(repo=repo)
+    try:
+        if requests is not None:
+            r = requests.get(url, timeout=timeout, headers={"Accept": "application/vnd.github.v3+json"})
+            if r.status_code == 200:
+                return r.json()
+            return None
+        else:
+            req = urllib.request.Request(url, headers={"Accept": "application/vnd.github.v3+json"})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                data = r.read()
+                return json.loads(data.decode("utf-8"))
+    except Exception:
+        return None
+
+
+def _download_url_bytes(url: str, timeout: float = 120.0) -> bytes:
+    try:
+        if requests is not None:
+            r = requests.get(url, stream=True, timeout=timeout)
+            r.raise_for_status()
+            bio = io.BytesIO()
+            for chunk in r.iter_content(chunk_size=8192):
+                if chunk:
+                    bio.write(chunk)
+            return bio.getvalue()
+        else:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return r.read()
+    except Exception as e:
+        raise RuntimeError(f"Download failed: {e}")
+
+
+def _extract_zip_bytes_to_folder(zbytes: bytes, target_folder: str) -> None:
+    # Ensure target exists
+    os.makedirs(target_folder, exist_ok=True)
+    with zipfile.ZipFile(io.BytesIO(zbytes)) as zf:
+        zf.extractall(target_folder)
+
+
+def _write_version_file(tag: str):
+    try:
+        with open(VERSION_FILE, "w", encoding="utf-8") as fh:
+            fh.write(f"{tag}\n")
+    except Exception:
+        pass
+
+
+def _check_and_download_release_background(repo: str):
+    """
+    Background worker: check latest release, if new prompt user (on main thread) then download+extract
+    """
+    root.after(0, lambda: status_var.set("Checking latest release..."))
+    data = _fetch_latest_release_json(repo)
+    if not data:
+        root.after(0, lambda: status_var.set("Could not fetch release info."))
+        return
+    tag = data.get("tag_name") or data.get("name")
+    html_url = data.get("html_url")
+    # prefer .zip asset if present
+    zip_url = None
+    assets = data.get("assets", []) or []
+    for a in assets:
+        aname = a.get("name", "")
+        if aname.lower().endswith(".zip"):
+            zip_url = a.get("browser_download_url")
+            break
+    if not zip_url:
+        # fallback to zipball_url (auto-generated)
+        zip_url = data.get("zipball_url") or data.get("tarball_url")
+    local_tag = _discover_local_version()
+    root.after(0, lambda: latest_var.set(tag or "(unknown)"))
+    if not tag:
+        root.after(0, lambda: status_var.set("Latest release has no tag."))
+        return
+    if tag == local_tag:
+        root.after(0, lambda: status_var.set(f"Up-to-date ({local_tag})"))
+        return
+
+    # prompt user to install
+    def _ask_install():
+        msg = f"New release available: {tag} (local: {local_tag}).\n\nOpen release page in browser?"
+        if messagebox.askyesno("Update available", msg):
+            try:
+                webbrowser.open(html_url)
+            except Exception:
+                pass
+        # ask to download & install now
+        if not messagebox.askyesno("Install now?", f"Download & install {tag} now into a folder of your choice?"):
+            root.after(0, lambda: status_var.set("Update available (install skipped)."))
+            return False
+        return True
+
+    do_install = False
+    root.after(0, lambda: status_var.set(f"Latest: {tag} — preparing..."))
+    proceed = threading.Event()
+    # run the ask on main thread and set event accordingly
+    def _ask_on_main():
+        nonlocal do_install
+        do_install = _ask_install()
+        proceed.set()
+    root.after(0, _ask_on_main)
+    # wait for user to respond (but do not block GUI thread)
+    proceed.wait()
+
+    if not do_install:
+        return
+
+    # choose target folder (on main thread)
+    folder_chosen = {"path": None}
+    done_evt = threading.Event()
+    def _ask_folder():
+        p = filedialog.askdirectory(title=f"Choose install base folder for {tag}")
+        folder_chosen["path"] = p
+        done_evt.set()
+    root.after(0, _ask_folder)
+    done_evt.wait()
+    target_base = folder_chosen["path"]
+    if not target_base:
+        root.after(0, lambda: status_var.set("Install cancelled (no folder chosen)."))
+        return
+
+    target_folder = os.path.join(target_base, tag)
+    # if exists ask overwrite
+    if os.path.exists(target_folder):
+        do_over = threading.Event()
+        def _ask_overwrite():
+            if messagebox.askyesno("Overwrite?", f"Folder {target_folder} already exists. Overwrite/extract into it?"):
+                do_over.set()
+        root.after(0, _ask_overwrite)
+        # wait for response
+        root.wait_variable(tk.BooleanVar())  # tiny no-op to ensure GUI doesn't hang; we handle overwrite by checking do_over
+        if not do_over.is_set():
+            root.after(0, lambda: status_var.set("Install cancelled (target exists)."))
+            return
+        # if user confirmed, proceed (we will overwrite contents via extractall)
+
+    # download the zip
+    try:
+        root.after(0, lambda: status_var.set("Downloading release..."))
+        zbytes = _download_url_bytes(zip_url)
+    except Exception as e:
+        root.after(0, lambda: status_var.set("Download failed."))
+        root.after(0, lambda: messagebox.showerror("Download failed", str(e)))
+        return
+
+    # extract
+    try:
+        root.after(0, lambda: status_var.set("Extracting..."))
+        _extract_zip_bytes_to_folder(zbytes, target_folder)
+    except Exception as e:
+        root.after(0, lambda: status_var.set("Extraction failed."))
+        root.after(0, lambda: messagebox.showerror("Extraction failed", str(e)))
+        return
+
+    # update local version record
+    settings["current_version"] = tag
+    try:
+        save_settings_to_file()
+    except Exception:
+        pass
+    _write_version_file(tag)
+    root.after(0, lambda: status_var.set(f"Installed {tag} → {target_folder}"))
+    root.after(0, lambda: messagebox.showinfo("Install complete", f"Release {tag} extracted to:\n{target_folder}"))
+
+
+def on_check_updates_now():
+    repo = settings.get("github_repo", DEFAULT_REPO)
+    # start background thread
+    t = threading.Thread(target=_check_and_download_release_background, args=(repo,), daemon=True)
+    t.start()
+
+
+# -------------------------
 # Build GUI
 # -------------------------
 root = tk.Tk()
@@ -585,9 +858,22 @@ reset_btn.grid(row=5, column=2, sticky="w", padx=padx, pady=(12,6))
 reset_restart_btn = ttk.Button(settings_tab, text="Reset + Restart", style="Main.TButton")
 reset_restart_btn.grid(row=6, column=1, sticky="w", padx=padx, pady=(6,12))
 
+# Latest release label (used/updated by the update-check worker)
+latest_var = tk.StringVar(value="(unknown)")
+ttk.Label(settings_tab, text="Latest release:", style="Main.TLabel")\
+    .grid(row=7, column=0, sticky="w", padx=padx, pady=pady)
+ttk.Label(settings_tab, textvariable=latest_var)\
+    .grid(row=7, column=1, sticky="w", padx=padx, pady=pady)
+
+
+# Check for updates button (new)
+check_updates_btn = ttk.Button(settings_tab, text="Check for updates now", style="Main.TButton", command=on_check_updates_now)
+check_updates_btn.grid(row=6, column=2, sticky="w", padx=padx, pady=(6,12))
+
 ToolTip(save_btn, f"Settings file: {SETTINGS_FILE}")
 ToolTip(reset_btn, f"Settings file: {SETTINGS_FILE}")
 ToolTip(reset_restart_btn, f"Settings file: {SETTINGS_FILE}")
+ToolTip(check_updates_btn, "Check GitHub releases for MapleMagic/recon10s and offer to download & install the latest release.")
 
 def on_save_settings():
     settings["coord_format"] = coord_var.get()
@@ -662,4 +948,3 @@ settings_tab.columnconfigure(1, weight=1)
 url_entry.focus_set()
 
 root.mainloop()
-
