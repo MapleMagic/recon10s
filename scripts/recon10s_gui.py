@@ -66,7 +66,7 @@ DEFAULTS = {
     "gui_theme": "dark",         # "dark" or "light"
     "plot_theme": "dark",        # "dark" or "light"
     "github_repo": "MapleMagic/recon10s",
-    "current_version": "v1.1.0"
+    "current_version": "v1.1.1"
 }
 settings = DEFAULTS.copy()
 
@@ -948,3 +948,4 @@ settings_tab.columnconfigure(1, weight=1)
 url_entry.focus_set()
 
 root.mainloop()
+
