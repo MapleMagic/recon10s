@@ -33,6 +33,7 @@ LAPSE = 0.0065  # K/m
 P0_STD = 1013.25  # hPa
 T0_STD = 288.15  # K
 KTS_PER_MPS = 1.9438444924406
+MSLP_BIAS_CORRECTION = -2.4  # mb
 
 BASE_FIELDS = [
     "Lat","Lon","GPS_MSL_Alt","WGS_84_Alt","Press_Alt","Radar_Alt","Grnd_Spd",
@@ -141,7 +142,7 @@ def extrapolate_surface_pressure(ps_hpa: float, z_m: float, t_c: Optional[float]
     if T_bar <= 0:
         return None
     p0 = ps_hpa * math.exp(G0 * z_m / (R_D * T_bar))
-    return float(p0)
+    return float(p0 + MSLP_BIAS_CORRECTION)
 
 # ----------------------------- HDOB encoding helpers -----------------------------
 def lat_to_LLLLH(lat: float) -> str:
@@ -501,3 +502,4 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
