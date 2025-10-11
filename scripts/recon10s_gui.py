@@ -377,7 +377,7 @@ def start_conversion_worker():
             return
     try:
         interval_i = int(interval)
-        if interval_i not in (10, 30, 60, 120):
+        if interval_i not in (5, 10, 30, 60, 120):
             raise ValueError()
     except Exception:
         messagebox.showerror("Input error", "Interval must be one of: 10, 30, 60, 120 seconds.")
@@ -778,7 +778,7 @@ date_entry.grid(row=3, column=1, sticky="w", padx=padx, pady=pady)
 
 ttk.Label(main_tab, text="Interval (s):", style="Main.TLabel").grid(row=4, column=0, sticky="e", padx=padx, pady=pady)
 interval_var = tk.StringVar(value="30")
-interval_menu = ttk.OptionMenu(main_tab, interval_var, "30", "10", "30", "60", "120")
+interval_menu = ttk.OptionMenu(main_tab, interval_var, "30", "5", "10", "30", "60", "120")
 interval_menu.grid(row=4, column=1, sticky="w", padx=padx, pady=pady)
 
 ttk.Label(main_tab, text="Output HDOB file:", style="Main.TLabel").grid(row=5, column=0, sticky="e", padx=padx, pady=pady)
@@ -948,6 +948,7 @@ settings_tab.columnconfigure(1, weight=1)
 url_entry.focus_set()
 
 root.mainloop()
+
 
 
 
