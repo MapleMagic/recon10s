@@ -447,7 +447,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     src.add_argument("--url", help="URL to IWG1 file")
     ap.add_argument("--mission", help="Mission identifier line prefix")
     ap.add_argument("--storm-date", required=False, help="YYYYMMDD date for mission line; default from first record UTC date")
-    ap.add_argument("--interval", type=int, choices=(10,30,60,120), default=30, help="HDOB time resolution (s)")
+    ap.add_argument("--interval", type=int, choices=(5,10,30,60,120), default=30, help="HDOB time resolution (s)")
     ap.add_argument("--lines-per-message", type=int, default=20, help="Number of lines per HDOB message")
     ap.add_argument("--out", help="Output file path for HDOB text; default prints to stdout")
     ap.add_argument("--start", help="UTC start time-of-day (HH:MM or HHMM or HH:MM:SS or HHMMSS)", default=None)
@@ -502,4 +502,5 @@ def main(argv: Optional[List[str]] = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
 
