@@ -66,7 +66,7 @@ DEFAULTS = {
     "gui_theme": "dark",         # "dark" or "light"
     "plot_theme": "dark",        # "dark" or "light"
     "github_repo": "MapleMagic/recon10s",
-    "current_version": "v1.1.1"
+    "current_version": "v1.1.3"
 }
 settings = DEFAULTS.copy()
 
