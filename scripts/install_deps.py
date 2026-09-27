@@ -2,6 +2,7 @@ import importlib
 import subprocess
 import sys
 
+# import name -> pip name
 required_packages = {
     "numpy": "numpy",
     "matplotlib": "matplotlib",
@@ -9,6 +10,10 @@ required_packages = {
     "requests": "requests",
     "PyQt6": "PyQt6",
     "pyqtgraph": "pyqtgraph",
+    "h5py": "h5py",
+    "pyproj": "pyproj",
+    "scipy": "scipy",
+    "sgp4": "sgp4",
 }
 
 
