@@ -1,0 +1,28 @@
+
+382 
+URPN12 KNHC 261806
+VORTEX DATA MESSAGE   EP152026
+A. 26/17:39:00Z
+B. 16.79 deg N 155.66 deg W
+C. 700 mb 2912 m
+D. 977 mb
+E. 050 deg 1 kt
+F. CLOSED
+G. E09/36/30
+H. NA
+I. NA
+J. 202 deg 63 kt
+K. 106 deg 18 nm 17:33:30Z
+L. NA
+M. NA
+N. 054 deg 83 kt
+O. 319 deg 22 nm 17:45:30Z
+P. 11 C / 3052 m
+Q. 15 C / 3053 m
+R. 11 C / NA
+S. 12345 / 07
+T. 0.02 / 2 nm
+U. AF302 0515E NOLO    OB 19
+MAX FL WIND 83 KT 319 / 22 NM 14:38:30Z
+;
+

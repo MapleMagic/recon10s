@@ -51,6 +51,12 @@ class Ob:
     sfmr: Optional[int] = None       # SFMR surface wind, kt
     fl_press: Optional[float] = None
     surface_press: Optional[float] = None   # extrapolated, when below 550 mb flight level
+    height: Optional[float] = None          # geopotential height of the aircraft, m
+    flags: str = ""                         # HDOB quality flags, two digits
+
+    @property
+    def wind_suspect(self) -> bool:
+        return flags_wind_suspect(self.flags)
 
 
 @dataclass
@@ -63,6 +69,7 @@ class Batch:
     obs: List[Ob] = field(default_factory=list)
     url: str = ""
     message_time: Optional[dt.datetime] = None
+    raw: str = ""                            # the message as issued (kept for saved cases)
 
     @property
     def key(self) -> Tuple[str, str]:
@@ -87,8 +94,32 @@ class Batch:
         return max(w) if w else None
 
 
+def flags_wind_suspect(flags: str) -> bool:
+    """
+    HDOB quality flags are two digits. The second covers T/Td, flight-level
+    wind and SFMR: 2, 4, 6 and 9 all include "flight-level winds
+    questionable" (0 all fine, 1 T/Td, 3 SFMR, 5 T/Td+SFMR).
+    """
+    return len(flags) == 2 and flags[1] in "2469"
+
+
+def flags_position_suspect(flags: str) -> bool:
+    """First digit: 1 lat/lon, 2 height or pressure, 3 both questionable."""
+    return len(flags) == 2 and flags[0] in "13"
+
+
 def _num(tok: str) -> Optional[int]:
     return int(tok) if tok and "/" not in tok and tok.lstrip("+-").isdigit() else None
+
+
+def _hdob_height(tok: str, fl_press: Optional[float]) -> Optional[float]:
+    """GGGGG: geopotential height in metres, 5 digits (leading digit dropped above 10 km)."""
+    v = _num(tok)
+    if v is None:
+        return None
+    if fl_press is not None and fl_press < 250 and v < 10000:
+        v += 10000
+    return float(v)
 
 
 def parse_message(text: str, url: str = "") -> Optional[Batch]:
@@ -100,7 +131,7 @@ def parse_message(text: str, url: str = "") -> Optional[Batch]:
         if m:
             date = dt.datetime.strptime(m.group(5), "%Y%m%d").date()
             batch = Batch(aircraft=m.group(1), mission=m.group(2), storm=m.group(3).strip(),
-                          number=int(m.group(4)), date=date, url=url)
+                          number=int(m.group(4)), date=date, url=url, raw=text)
             continue
         if batch is None:
             continue
@@ -113,6 +144,12 @@ def parse_message(text: str, url: str = "") -> Optional[Batch]:
         lat = (int(lat_m.group(1)) + int(lat_m.group(2)) / 60.0) * (1 if lat_m.group(3) == "N" else -1)
         lon = (int(lon_m.group(1)) + int(lon_m.group(2)) / 60.0) * (1 if lon_m.group(3) == "E" else -1)
 
+        flags = parts[12] if len(parts) > 12 else ""
+        # A questionable position (first flag digit 1 or 3) is dropped: the
+        # first line of a mission can read 0000N 00000E with flags "39", and
+        # one such point stretches the map across half the globe.
+        if flags_position_suspect(flags) or (abs(lat) < 0.01 and abs(lon) < 0.01):
+            continue
         hh, mm, ss = int(parts[0][:2]), int(parts[0][2:4]), int(parts[0][4:6])
         t = dt.datetime.combine(batch.date, dt.time(hh, mm, ss), tzinfo=dt.timezone.utc)
         if last_time is not None and t < last_time - dt.timedelta(hours=6):
@@ -132,7 +169,8 @@ def parse_message(text: str, url: str = "") -> Optional[Batch]:
         batch.obs.append(Ob(time=t, lat=lat, lon=lon, wdir=wdir, wspd=wspd,
                             peak=_num(parts[9]) if len(parts) > 9 else None,
                             sfmr=_num(parts[10]) if len(parts) > 10 else None,
-                            fl_press=fl_press, surface_press=sfc))
+                            fl_press=fl_press, surface_press=sfc,
+                            height=_hdob_height(parts[4], fl_press), flags=flags))
     return batch if batch and batch.obs else None
 
 

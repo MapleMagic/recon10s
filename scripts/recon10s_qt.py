@@ -11,10 +11,14 @@ matplotlib's Qt backend.
     pressure at full 1 Hz resolution.
   * Convert tab: writes HDOB, reusing whatever the live tab already holds so
     no second download is needed.
-  * Satellite tab: GOES-18/19 bands 2, 7, 9, 13 as a 1-, 15- or 30-frame
-    loop, with the recon obs drawn over it as wind barbs.
+  * Satellite tab: GOES-18/19 and Himawari-9 imagery (single bands and
+    composites) as a 1-, 15- or 30-frame loop, for storms in every basin
+    the satellites see, with the recon obs drawn over it as wind barbs.
   * Microwave tab: real GMI / AMSR3 / WSF-M passes from the PPS
     near-real-time server, 89 and 37 GHz side by side, with a pixel probe.
+  * File › Save case / Open case: a whole case (recon messages, best track,
+    ADT, satellite estimates, TDR analyses, imagery references) in one file,
+    and a replay bar that plays the mission back as it arrived.
 
 Run:  python recon10s_qt.py
 Needs: PyQt6, pyqtgraph, numpy, requests (plus matplotlib/cartopy for the map)
@@ -27,6 +31,7 @@ import json
 import os
 import re
 import sys
+import warnings
 import zipfile
 from typing import Any, Dict, Optional
 
@@ -38,8 +43,8 @@ from PyQt6.QtGui import QAction, QColor, QDesktopServices, QFont, QPalette
 from PyQt6.QtWidgets import (
     QApplication, QCheckBox, QComboBox, QDateEdit, QFileDialog, QFormLayout, QFrame,
     QGridLayout, QGroupBox, QHBoxLayout, QLabel, QLineEdit, QMainWindow,
-    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton,
-    QSpinBox, QSplitter, QStackedWidget, QStatusBar, QTabWidget, QVBoxLayout, QWidget,
+    QMessageBox, QPlainTextEdit, QProgressBar, QPushButton, QRadioButton, QSlider,
+    QSpinBox, QSplitter, QStackedWidget, QStatusBar, QTabWidget, QToolBar, QVBoxLayout, QWidget,
 )
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -71,18 +76,98 @@ except Exception as _sat_exc:  # cartopy/h5py missing
     _SAT_IMPORT_ERROR = _sat_exc
 
 try:
+    from recon10s_analysispanel import AnalysisPanel
+except Exception as _an_exc:
+    AnalysisPanel = None
+    _AN_IMPORT_ERROR = _an_exc
+
+try:
+    from recon10s_tdrpanel import TdrPanel
+except Exception as _tdr_exc:
+    TdrPanel = None
+    _TDR_IMPORT_ERROR = _tdr_exc
+
+try:
+    from recon10s_radarpanel import RadarPanel
+except Exception as _radar_exc:
+    RadarPanel = None
+    _RADAR_IMPORT_ERROR = _radar_exc
+
+try:
+    from recon10s_tdr3dpanel import Tdr3dPanel
+except Exception as _t3_exc:
+    Tdr3dPanel = None
+    _T3_IMPORT_ERROR = _t3_exc
+
+try:
+    from recon10s_jmapanel import JmaPanel
+except Exception as _jma_exc:
+    JmaPanel = None
+    _JMA_IMPORT_ERROR = _jma_exc
+
+try:
+    from recon10s_tdrgridpanel import TdrGridPanel
+except Exception as _tdrg_exc:
+    TdrGridPanel = None
+    _TDRG_IMPORT_ERROR = _tdrg_exc
+
+try:
     from recon10s_mwpanel import MicrowavePanel
 except Exception as _mw_exc:  # scipy/sgp4/cartopy missing
     MicrowavePanel = None
     _MW_IMPORT_ERROR = _mw_exc
 
 try:
+    from recon10s_windpanel import WindFieldPanel
+except Exception as _wind_exc:
+    WindFieldPanel = None
+    _WIND_IMPORT_ERROR = _wind_exc
+
+try:
+    from recon10s_intensitypanel import IntensityPanel
+except Exception as _int_exc:
+    IntensityPanel = None
+    _INT_IMPORT_ERROR = _int_exc
+
+try:
+    from recon10s_tdrevopanel import TdrEvolutionPanel
+except Exception as _evo_exc:
+    TdrEvolutionPanel = None
+    _EVO_IMPORT_ERROR = _evo_exc
+
+try:
+    from recon10s_radarvolpanel import RadarVolumePanel
+except Exception as _vol_exc:
+    RadarVolumePanel = None
+    _VOL_IMPORT_ERROR = _vol_exc
+
+try:
+    from recon10s_syntdrpanel import SynTdrPanel
+except Exception as _syn_exc:
+    SynTdrPanel = None
+    _SYN_IMPORT_ERROR = _syn_exc
+
+try:
+    from recon10s_satintpanel import SatIntensityPanel
+except Exception as _si_exc:
+    SatIntensityPanel = None
+    _SI_IMPORT_ERROR = _si_exc
+
+try:
+    import recon10s_case
+except Exception:  # pragma: no cover
+    recon10s_case = None
+
+try:
     import requests
 except Exception:
     requests = None
 
+# Hidden tabs draw into figures with no size yet; matplotlib says so on every one.
+warnings.filterwarnings("ignore", message="constrained_layout not applied")
+
 HERE = os.path.dirname(os.path.abspath(__file__))
-SETTINGS_FILE = os.path.join(HERE, "recon10s_settings.json")
+SETTINGS_FILE = os.path.join(recon10s.user_dir(), "recon10s_settings.json")
 GITHUB_LATEST_RELEASE_API = "https://api.github.com/repos/{repo}/releases/latest"
 
 DEFAULTS: Dict[str, Any] = {
@@ -201,6 +286,18 @@ class MainWindow(QMainWindow):
         self.recon_tabs.addTab(self._build_live_tab(), "Live plot")
         self.convert_page = self._build_convert_tab()
         self.recon_tabs.addTab(self.convert_page, "Convert IWG1 to HDOB")
+        self.analysis_panel = AnalysisPanel(theme=self.settings.get("plot_theme", "dark")) \
+            if AnalysisPanel is not None else None
+        self.recon_tabs.addTab(self.analysis_panel or self._missing("Analysis", _AN_IMPORT_ERROR
+                               if AnalysisPanel is None else ""), "Analysis")
+        self.wind_panel = WindFieldPanel(theme=self.settings.get("plot_theme", "dark")) \
+            if WindFieldPanel is not None else None
+        self.recon_tabs.addTab(self.wind_panel or self._missing("Wind field", _WIND_IMPORT_ERROR
+                               if WindFieldPanel is None else ""), "Wind field")
+        self.intensity_panel = IntensityPanel(theme=self.settings.get("plot_theme", "dark")) \
+            if IntensityPanel is not None else None
+        self.recon_tabs.addTab(self.intensity_panel or self._missing("Intensity", _INT_IMPORT_ERROR
+                               if IntensityPanel is None else ""), "Intensity")
         recon_body = QWidget()
         rb = QVBoxLayout(recon_body)
         rb.setContentsMargins(0, 0, 0, 0)
@@ -213,16 +310,59 @@ class MainWindow(QMainWindow):
         self.sat_page = self._build_satellite_tab()
         self.imagery_tabs.addTab(self.sat_page, "Satellite")
         self.imagery_tabs.addTab(self._build_microwave_tab(), "Microwave")
+        self.tdr_panel = TdrPanel(theme=self.settings.get("plot_theme", "dark")) if TdrPanel is not None else None
+        self.imagery_tabs.addTab(self.tdr_panel or self._missing("TDR", _TDR_IMPORT_ERROR
+                                 if TdrPanel is None else ""), "TDR")
         self.imagery_page = self._section("Imagery", self.imagery_tabs)
+
+        self.radar_tabs = QTabWidget()
+        theme = self.settings.get("plot_theme", "dark")
+        self.radar_panel = RadarPanel(theme=theme) if RadarPanel is not None else None
+        self.radar_tabs.addTab(self.radar_panel or self._missing(
+            "NEXRAD", f"{_RADAR_IMPORT_ERROR}\n\npip install arm_pyart" if RadarPanel is None else ""), "NEXRAD")
+        self.jma_panel = JmaPanel(theme=theme) if JmaPanel is not None else None
+        self.radar_tabs.addTab(self.jma_panel or self._missing(
+            "JMA", _JMA_IMPORT_ERROR if JmaPanel is None else ""), "JMA")
+        self.tdrgrid_panel = TdrGridPanel(theme=theme) if TdrGridPanel is not None else None
+        self.radar_tabs.addTab(self.tdrgrid_panel or self._missing(
+            "Airborne TDR", _TDRG_IMPORT_ERROR if TdrGridPanel is None else ""), "Airborne TDR")
+        self.radarvol_panel = RadarVolumePanel(theme=theme) if RadarVolumePanel is not None else None
+        self.radar_tabs.addTab(self.radarvol_panel or self._missing(
+            "Radar volume", _VOL_IMPORT_ERROR if RadarVolumePanel is None else ""), "Radar volume")
+        self.radar_page = self._section("Radar", self.radar_tabs)
+
+        self.experimental_tabs = QTabWidget()
+        self.tdr3d_panel = Tdr3dPanel(theme=theme) if Tdr3dPanel is not None else None
+        self.experimental_tabs.addTab(self.tdr3d_panel or self._missing(
+            "3D structure", _T3_IMPORT_ERROR if Tdr3dPanel is None else ""), "3D structure")
+        self.tdrevo_panel = TdrEvolutionPanel(theme=theme) if TdrEvolutionPanel is not None else None
+        self.experimental_tabs.addTab(self.tdrevo_panel or self._missing(
+            "TDR evolution", _EVO_IMPORT_ERROR if TdrEvolutionPanel is None else ""), "TDR evolution")
+        self.syntdr_panel = SynTdrPanel(theme=theme) if SynTdrPanel is not None else None
+        self.experimental_tabs.addTab(self.syntdr_panel or self._missing(
+            "Synthetic TDR", _SYN_IMPORT_ERROR if SynTdrPanel is None else ""), "Synthetic TDR")
+        self.satint_panel = SatIntensityPanel(theme=theme, email_provider=self._pps_email) \
+            if SatIntensityPanel is not None else None
+        self.experimental_tabs.addTab(self.satint_panel or self._missing(
+            "Satellite intensity", _SI_IMPORT_ERROR if SatIntensityPanel is None else ""), "Satellite intensity")
+        self.experimental_page = self._section("Experimental", self.experimental_tabs)
 
         self.settings_page = self._section("Settings", self._build_settings_tab())
 
-        for page in (self.home_page, self.recon_page, self.imagery_page, self.settings_page):
+        for page in (self.home_page, self.recon_page, self.imagery_page, self.radar_page,
+                     self.experimental_page, self.settings_page):
             self.stack.addWidget(page)
         self.setCentralWidget(self.stack)
+        self._wire_panels()
 
         self.setStatusBar(QStatusBar())
         self.status("Ready.")
+        self.case = None
+        self.replay = None
+        self._replay_clock = None
+        self._replay_counts = None
+        self._replay_tdr = None
+        self._build_replay_bar()
 
         self._build_menu()
 
@@ -236,6 +376,485 @@ class MainWindow(QMainWindow):
         self._on_auto_toggled(self.chk_auto.isChecked())
 
     # ------------------------------------------------------------ UI pieces
+
+    @staticmethod
+    def _missing(name: str, exc) -> QWidget:
+        note = QLabel(f"The {name} tab could not load:\n\n{exc}")
+        note.setObjectName("hint")
+        note.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        note.setWordWrap(True)
+        return note
+
+    def _wire_panels(self):
+        """One set of recon data, loaded in the Satellite tab, shared with the others."""
+        sp = getattr(self, "sat_panel", None)
+        if sp is None:
+            return
+        sp.recon_changed.connect(self._on_recon_changed)
+        if getattr(self, "tdrgrid_panel", None) is not None:
+            self.tdrgrid_panel.layer_changed.connect(sp.set_tdr_layer)
+            if getattr(self, "tdr3d_panel", None) is not None:
+                self.tdrgrid_panel.grid_loaded.connect(self.tdr3d_panel.follow)
+        sp.alert.connect(self._on_alert)
+        if self.analysis_panel is not None:
+            self.analysis_panel.request_load.connect(sp.load_all_recon)
+            self.analysis_panel.request_show.connect(lambda: self.go_imagery(self.sat_page))
+            self.analysis_panel.request_drop.connect(sp._open_drop)
+        if self.intensity_panel is not None and self.wind_panel is not None:
+            self.intensity_panel.track_loaded.connect(self.wind_panel.set_track)
+        vol = getattr(self, "radarvol_panel", None)
+        if vol is not None:
+            for src in (getattr(self, "radar_panel", None), getattr(self, "jma_panel", None)):
+                if src is not None:
+                    src.volume_requested.connect(self._on_volume_requested)
+            vol.layer_changed.connect(sp.set_tdr_layer)
+            vol.grid_loaded.connect(lambda g: self.status(f"Radar volume ready: {g.name}, "
+                                                          f"{g.x.size} × {g.y.size} × {g.z.size}."))
+            if getattr(self, "tdr3d_panel", None) is not None:
+                vol.send_to_3d.connect(self._on_send_to_3d)
+        if getattr(self, "tdrevo_panel", None) is not None and getattr(self, "tdrgrid_panel", None) is not None:
+            self.tdrevo_panel.request_open.connect(self._open_tdr_analysis)
+        si_panel = getattr(self, "satint_panel", None)
+        if si_panel is not None:
+            if self.intensity_panel is not None:
+                si_panel.estimates_changed.connect(self.intensity_panel.set_satellite_estimates)
+                self.intensity_panel.track_loaded.connect(si_panel.set_track)
+                self.intensity_panel.cimss_loaded.connect(si_panel.set_reference_estimates)
+        syn = getattr(self, "syntdr_panel", None)
+        if syn is not None:
+            syn.request_load.connect(sp.load_all_recon)
+            syn.layer_changed.connect(sp.set_tdr_layer)
+            if getattr(self, "tdr3d_panel", None) is not None:
+                syn.send_to_3d.connect(self._on_send_to_3d)
+            if self.intensity_panel is not None:
+                self.intensity_panel.track_loaded.connect(syn.set_track)
+            if getattr(self, "tdrgrid_panel", None) is not None:
+                self.tdrgrid_panel.grid_loaded.connect(syn.set_real_tdr)
+        self.tray = None
+        try:
+            from PyQt6.QtWidgets import QSystemTrayIcon
+            if QSystemTrayIcon.isSystemTrayAvailable():
+                self.tray = QSystemTrayIcon(self.windowIcon() or QApplication.windowIcon(), self)
+                self.tray.setToolTip("recon10s")
+                self.tray.show()
+        except Exception:
+            self.tray = None
+
+    def _on_recon_changed(self, bundle):
+        if self.analysis_panel is not None:
+            self.analysis_panel.set_bundle(bundle)
+        if getattr(self, "mw_panel", None) is not None:
+            self.mw_panel.set_recon(bundle)
+        if bundle.fix is not None and bundle.fix.storm_id:
+            for panel in (self.tdr_panel, getattr(self, "tdrgrid_panel", None),
+                          getattr(self, "tdr3d_panel", None)):
+                if panel is not None:
+                    panel.set_storm_name(bundle.fix.name)
+            if getattr(self, "tdrevo_panel", None) is not None:
+                self.tdrevo_panel.set_storm(bundle.fix.name, bundle.fix.storm_id)
+        if getattr(self, "radar_panel", None) is not None:
+            self.radar_panel.set_recon(bundle)
+        if getattr(self, "wind_panel", None) is not None:
+            self.wind_panel.set_bundle(bundle)
+        if getattr(self, "intensity_panel", None) is not None:
+            self.intensity_panel.set_bundle(bundle)
+        if getattr(self, "syntdr_panel", None) is not None:
+            self.syntdr_panel.set_bundle(bundle)
+        if getattr(self, "satint_panel", None) is not None:
+            self.satint_panel.set_bundle(bundle)
+
+    def _pps_email(self) -> Optional[str]:
+        """The PPS sign-in for microwave passes: what the Microwave tab has, else the saved one."""
+        mw = getattr(self, "mw_panel", None)
+        if mw is not None:
+            try:
+                email = mw._email()
+                if email:
+                    return email
+            except Exception:
+                pass
+        try:
+            import recon10s_mw
+            return recon10s_mw.load_saved_email()
+        except Exception:
+            return None
+
+    def _on_volume_requested(self, vol, centre, storm, motion):
+        """NEXRAD or JMA asked for a 3-D volume: grid it in Radar › Radar volume."""
+        self.radarvol_panel.build_from(vol, centre, storm, motion)
+        self.go_radar(self.radarvol_panel)
+        self.status("Gridding the radar volume\u2026")
+
+    def _on_send_to_3d(self, grid):
+        self.tdr3d_panel.chk_follow.setChecked(False)          # keep the radar volume on screen
+        self.tdr3d_panel.set_grid(grid)
+        self.go_experimental(self.tdr3d_panel)
+
+    def _open_tdr_analysis(self, mission: str, hhmm: str):
+        """TDR evolution asked for one pass: open it in Radar › Airborne TDR."""
+        self.tdrgrid_panel.open_analysis(mission, hhmm)
+        self.go_radar(self.tdrgrid_panel)
+
+    def _on_alert(self, title: str, message: str):
+        """Desktop notification where there is a tray, and always a beep and the status bar."""
+        if getattr(self, "tray", None) is not None:
+            from PyQt6.QtWidgets import QSystemTrayIcon
+            self.tray.showMessage(f"recon10s: {title}", message, QSystemTrayIcon.MessageIcon.Warning, 15000)
+        QApplication.beep()
+        self.status(f"ALERT \u2014 {title}: {message}")
+
+    # ------------------------------------------------------------ saved cases
+
+    def _build_replay_bar(self):
+        bar = QToolBar("Replay", self)
+        bar.setObjectName("replayBar")
+        bar.setMovable(False)
+        self.replay_title = QLabel("")
+        self.replay_title.setObjectName("bandTitle")
+        bar.addWidget(self.replay_title)
+        self.btn_replay_start = QPushButton("\u23ee")
+        self.btn_replay_start.setToolTip("Back to the start of the case")
+        self.btn_replay_start.clicked.connect(lambda: self._replay_set(self.replay.start, force=True))
+        self.btn_replay_play = QPushButton("\u25b6")
+        self.btn_replay_play.setToolTip("Play / pause")
+        self.btn_replay_play.clicked.connect(self._replay_toggle)
+        for b in (self.btn_replay_start, self.btn_replay_play):
+            b.setFixedWidth(42)
+            bar.addWidget(b)
+        self.replay_speed = QComboBox()
+        for label, k in (("1\u00d7", 1), ("10\u00d7", 10), ("30\u00d7", 30), ("60\u00d7", 60), ("120\u00d7", 120),
+                         ("300\u00d7", 300), ("900\u00d7", 900)):
+            self.replay_speed.addItem(label, k)
+        self.replay_speed.setCurrentIndex(4)
+        self.replay_speed.setToolTip("Case minutes per real minute")
+        bar.addWidget(self.replay_speed)
+        self.replay_slider = QSlider(Qt.Orientation.Horizontal)
+        self.replay_slider.setMinimumWidth(260)
+        self.replay_slider.valueChanged.connect(self._replay_slider_moved)
+        bar.addWidget(self.replay_slider)
+        self.replay_clock_label = QLabel("")
+        self.replay_clock_label.setObjectName("probeReadout")
+        self.replay_clock_label.setMinimumWidth(380)
+        bar.addWidget(self.replay_clock_label)
+        btn_img = QPushButton("Imagery at this time")
+        btn_img.setToolTip("Fetch the satellite loop ending at the replay clock (from the public GOES and "
+                           "Himawari-9 archives)")
+        btn_img.clicked.connect(self._replay_imagery)
+        bar.addWidget(btn_img)
+        btn_end = QPushButton("End")
+        btn_end.setToolTip("Jump to the end: everything in the case")
+        btn_end.clicked.connect(lambda: self._replay_set(self.replay.end, force=True))
+        bar.addWidget(btn_end)
+        btn_exit = QPushButton("Exit replay")
+        btn_exit.clicked.connect(self.exit_replay)
+        bar.addWidget(btn_exit)
+        self.addToolBar(Qt.ToolBarArea.BottomToolBarArea, bar)
+        bar.setVisible(False)
+        self.replay_bar = bar
+        self.replay_timer = QTimer(self)
+        self.replay_timer.setInterval(1000)
+        self.replay_timer.timeout.connect(self._replay_tick)
+
+    def _tdr_url(self, grid) -> Optional[str]:
+        import recon10s_tdrgrid as tg
+        name = getattr(grid, "name", "")
+        if grid is None or not name.endswith("_xy.nc.gz") or not grid.has_winds():
+            return None
+        return tg.url_for(name)
+
+    def _case_contents(self) -> dict:
+        """Everything the session has loaded that belongs in a saved case."""
+        import hashlib
+        import recon10s_tdrgrid as tg
+        sp = getattr(self, "sat_panel", None)
+        out = {"fix": None, "batches": [], "vdms": [], "drops": [], "converted": None, "forecast": None,
+               "models": [], "track": [], "adt_url": "", "adt_text": "", "cimss_ml": {}, "satint": [], "tdr_grids": {},
+               "tdr_available": {}, "evolution": [], "imagery": {}}
+        if sp is not None:
+            b = sp.bundle()
+            out.update(fix=sp.current_fix(), batches=b.batches, vdms=b.vdms, drops=b.drops,
+                       converted=sp.converted_overlay(), forecast=sp._forecast, models=sp._models)
+            out["imagery"]["goes"] = sp.imagery_refs()
+        ip = getattr(self, "intensity_panel", None)
+        if ip is not None:
+            out.update(track=ip.track, adt_url=ip.adt_url, adt_text=ip.adt_text,
+                       cimss_ml={k: (v[1], v[2]) for k, v in ip.cimss_ml.items() if v[2]})
+        si_panel = getattr(self, "satint_panel", None)
+        if si_panel is not None and si_panel.estimates:
+            out["satint"] = [e.to_dict() for e in si_panel.estimates]
+        urls = {}
+        tp = getattr(self, "tdrgrid_panel", None)
+        if tp is not None and tp.grid is not None:
+            u = self._tdr_url(tp.grid)
+            if u:
+                avail = next((a.available for a in tp.analyses if a.xy == tp.grid.name), None)
+                urls[u] = avail.isoformat() if avail else (
+                    (tp.grid.end + dt.timedelta(minutes=30)).isoformat() if tp.grid.end else None)
+        t3 = getattr(self, "tdr3d_panel", None)
+        if t3 is not None and t3.grid is not None:
+            u = self._tdr_url(t3.grid)
+            if u and u not in urls:
+                urls[u] = (t3.grid.end + dt.timedelta(minutes=30)).isoformat() if t3.grid.end else None
+        ev = getattr(self, "tdrevo_panel", None)
+        if ev is not None and ev.metrics:
+            out["evolution"] = ev.metrics
+            for m in ev.metrics:
+                if m.error:
+                    continue
+                u = tg.url_for(m.name)
+                urls.setdefault(u, m.available or ((dt.datetime.fromisoformat(m.end) + dt.timedelta(minutes=30))
+                                                   .isoformat() if m.end else None))
+        for u, avail in urls.items():
+            local = os.path.join(tg.CACHE_DIR, hashlib.sha1(u.encode()).hexdigest()[:16] + ".nc")
+            if os.path.exists(local):
+                out["tdr_grids"][u] = local
+                if avail:
+                    out["tdr_available"][u] = avail
+        rp = getattr(self, "radar_panel", None)
+        if rp is not None and rp.volume is not None:
+            out["imagery"]["nexrad"] = {"site": rp.volume.scan.site, "key": rp.volume.scan.key,
+                                        "time": rp.volume.scan.time.isoformat()}
+        jp = getattr(self, "jma_panel", None)
+        if jp is not None and jp.volume is not None:
+            out["imagery"]["jma"] = {"site": jp.volume.site_id, "time": jp.volume.scan.time.isoformat()}
+        return out
+
+    def save_case(self):
+        if recon10s_case is None:
+            self.status("Saving cases is unavailable in this build.")
+            return
+        c = self._case_contents()
+        if not (c["batches"] or c["vdms"] or c["drops"] or c["track"] or c["evolution"]):
+            QMessageBox.information(self, "Nothing to save",
+                                    "Load some recon first (Imagery \u203a Satellite \u203a Load all recon), "
+                                    "or NHC's best track under Reconnaissance \u203a Intensity.")
+            return
+        n_tdr = len(c["tdr_grids"])
+        if n_tdr >= 3:
+            ans = QMessageBox.question(
+                self, "TDR analyses",
+                f"Keep the {n_tdr} gridded TDR analyses in the case? Compressed they take 2–7 MB "
+                f"each (about {4 * n_tdr} MB here). Without them the replay keeps their TDR evolution "
+                "numbers but cannot show the grids.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Yes)
+            if ans == QMessageBox.StandardButton.Cancel:
+                return
+            if ans == QMessageBox.StandardButton.No:
+                c["tdr_grids"], c["tdr_available"] = {}, {}
+        fix = c["fix"]
+        stamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%d_%H%M")
+        default = f"{(fix.name if fix else 'case').replace(' ', '_')}_{fix.storm_id if fix else ''}_{stamp}" \
+                  f"{recon10s_case.EXTENSION}".replace("__", "_")
+        path, _ = QFileDialog.getSaveFileName(self, "Save case", default,
+                                              f"recon10s case (*{recon10s_case.EXTENSION})")
+        if not path:
+            return
+        n_tdr = len(c["tdr_grids"])
+        self.status(f"Saving the case ({len(c['batches'])} HDOBs, {len(c['vdms'])} fixes, {len(c['drops'])} drops"
+                    + (f", {n_tdr} TDR analyses" if n_tdr else "") + ")\u2026")
+        title = f"{fix.name} {fix.storm_id.upper()}".strip() if fix else "recon10s case"
+
+        def work(path, c):
+            return recon10s_case.save_case(path, title=title, version=recon10s.VERSION, **c)
+        worker = Worker(work, path, c)
+        worker.signals.done.connect(lambda man: self.status(
+            f"Saved {os.path.basename(man['path'])} ({os.path.getsize(man['path']) / 1e6:.1f} MB): "
+            f"{len(man['hdob'])} HDOBs, {len(man['vdm'])} vortex messages, {len(man['drops'])} drops, "
+            f"{len(man['tdr'])} TDR analyses."))
+        worker.signals.failed.connect(lambda m: QMessageBox.critical(self, "Could not save the case", m))
+        self.pool.start(worker)
+
+    def open_case(self, path: Optional[str] = None):
+        if recon10s_case is None:
+            return
+        if not path:
+            path, _ = QFileDialog.getOpenFileName(self, "Open case", "",
+                                                  f"recon10s case (*{recon10s_case.EXTENSION});;All files (*)")
+        if not path:
+            return
+        self.status(f"Opening {os.path.basename(path)}\u2026")
+        worker = Worker(recon10s_case.load_case, path)
+        worker.signals.done.connect(self.start_replay)
+        worker.signals.failed.connect(lambda m: QMessageBox.critical(self, "Could not open the case", m))
+        self.pool.start(worker)
+
+    def start_replay(self, case):
+        """Load a case into every tab and put the replay bar up, paused at the start."""
+        import recon10s_verify as verify
+        self.case = case
+        self.replay = recon10s_case.Replay(case)
+        if self.replay.start is None:
+            QMessageBox.information(self, "Empty case", "That case holds no recon to replay.")
+            return
+        self._case_adt = verify.parse_adt(case.adt_text) if case.adt_text else []
+        self._case_ml = {k: (verify.parse_cimss_ml(text), url, text) for k, (url, text) in case.cimss_ml.items()}
+        self._replay_counts = None
+        self._replay_tdr = None
+        sp = getattr(self, "sat_panel", None)
+        if sp is not None:
+            sp.replay_mode = True
+            sp.chk_live.setChecked(False)
+            sp.live_timer.stop()
+            sp.set_case_storm(case.fix)
+            if case.converted is not None and len(case.converted):
+                sp.set_overlay(case.converted)
+            sp.set_forecast(case.forecast, case.models)
+        ip = getattr(self, "intensity_panel", None)
+        if ip is not None and case.fix is not None:
+            ip.storm_id.setText(case.fix.storm_id)
+            ip._auto_sid = case.fix.storm_id
+            ip._loaded_for = case.fix.storm_id                 # no live fetch over the case's own copy
+        si_panel = getattr(self, "satint_panel", None)
+        if si_panel is not None:
+            import recon10s_satint as satint
+            if case.fix is not None:
+                si_panel._track_for = case.fix.storm_id          # the case's own best track, not a live one
+                si_panel.set_storm(case.fix)
+            si_panel.set_estimates([satint.Estimate.from_dict(d) for d in (case.satint or [])])
+        minutes = int((self.replay.end - self.replay.start).total_seconds() // 60) + 1
+        self.replay_slider.blockSignals(True)
+        self.replay_slider.setRange(0, minutes)
+        self.replay_slider.blockSignals(False)
+        span = f"{self.replay.start:%d %b %H:%M}\u2013{self.replay.end:%d %b %H:%MZ}"
+        self.replay_title.setText(f"  Replay: {case.name}  ({span})  ")
+        self.replay_bar.setVisible(True)
+        self._replay_set(self.replay.start, force=True)
+        self.status(f"Opened {os.path.basename(case.path)}: {len(case.batches)} HDOBs, {len(case.vdms)} vortex "
+                    f"messages, {len(case.drops)} drops, {len(case.tdr_paths)} TDR analyses. Press \u25b6 to replay.")
+        self.go_recon(self.analysis_panel) if self.analysis_panel is not None else self.go_recon()
+
+    def _replay_toggle(self):
+        if self.replay is None:
+            return
+        if self.replay_timer.isActive():
+            self.replay_timer.stop()
+            self.btn_replay_play.setText("\u25b6")
+        else:
+            if self._replay_clock is not None and self._replay_clock >= self.replay.end:
+                self._replay_set(self.replay.start, force=True)
+            self.replay_timer.start()
+            self.btn_replay_play.setText("\u275a\u275a")
+
+    def _replay_tick(self):
+        if self.replay is None or self._replay_clock is None:
+            return
+        t = self._replay_clock + dt.timedelta(seconds=int(self.replay_speed.currentData()))
+        if t >= self.replay.end:
+            t = self.replay.end
+            self.replay_timer.stop()
+            self.btn_replay_play.setText("\u25b6")
+        self._replay_set(t)
+
+    def _replay_slider_moved(self, value: int):
+        if self.replay is not None:
+            self._replay_set(self.replay.start + dt.timedelta(minutes=value), from_slider=True)
+
+    def _replay_set(self, t, force: bool = False, from_slider: bool = False):
+        """Move the replay clock to t and give every tab what had arrived by then."""
+        import recon10s_tdrevo as evo
+        r = self.replay
+        if r is None:
+            return
+        t = max(r.start, min(r.end, t))
+        self._replay_clock = t
+        if not from_slider:
+            self.replay_slider.blockSignals(True)
+            self.replay_slider.setValue(int((t - r.start).total_seconds() // 60))
+            self.replay_slider.blockSignals(False)
+        b, v, d = r.at(t)
+        counts = (len(b), len(v), len(d))
+        self.replay_clock_label.setText(f"{t:%d %b %H:%M:%SZ}  \u00b7  {counts[0]} HDOBs \u00b7 {counts[1]} fixes "
+                                        f"\u00b7 {counts[2]} drops")
+        if counts == self._replay_counts and not force:
+            return
+        self._replay_counts = counts
+        sp = getattr(self, "sat_panel", None)
+        if sp is not None:
+            sp.set_recon_data(b, v, d)
+        ip = getattr(self, "intensity_panel", None)
+        if ip is not None:
+            ip.set_until(t)
+            ip.set_reference(r.track_at(t), [e for e in self._case_adt if e.time <= t], self.case.adt_url,
+                             self.case.adt_text,
+                             ml={k: ([e for e in ests if e.time <= t], url, text)
+                                 for k, (ests, url, text) in self._case_ml.items()})
+        ev = getattr(self, "tdrevo_panel", None)
+        if ev is not None and self.case.evolution:
+            ev.set_metrics([evo.PassMetrics(**row) for row in r.evolution_at(t)])
+        si_panel = getattr(self, "satint_panel", None)
+        if si_panel is not None:
+            si_panel.set_until(t)
+        tp = getattr(self, "tdrgrid_panel", None)
+        urls = r.tdr_at(t)
+        if tp is not None and urls and urls[-1] != self._replay_tdr:
+            self._replay_tdr = urls[-1]
+            import recon10s_tdrgrid as tg
+            worker = Worker(tg.load_grid, urls[-1])
+            worker.signals.done.connect(lambda g: tp.show_grid(g))
+            self.pool.start(worker)
+
+    def _replay_imagery(self):
+        sp = getattr(self, "sat_panel", None)
+        if sp is None or self._replay_clock is None:
+            return
+        sp.fetch_at(self._replay_clock)
+        self.go_imagery(self.sat_page)
+
+    def exit_replay(self):
+        if self.replay is not None:
+            self._replay_set(self.replay.end, force=True)
+        self.replay_timer.stop()
+        self.btn_replay_play.setText("\u25b6")
+        self.replay_bar.setVisible(False)
+        if getattr(self, "sat_panel", None) is not None:
+            self.sat_panel.replay_mode = False
+        if getattr(self, "intensity_panel", None) is not None:
+            self.intensity_panel.set_until(None)
+        if getattr(self, "satint_panel", None) is not None:
+            self.satint_panel.set_until(None)
+        self.replay = None
+        self.status("Replay ended. The case's data stays loaded; Load all recon fetches live data again.")
+
+    # ---------------------------------------------------------------- session
+
+    def _session(self) -> dict:
+        return {
+            "section": self.stack.currentIndex(),
+            "recon_tab": self.recon_tabs.currentIndex(),
+            "imagery_tab": self.imagery_tabs.currentIndex(),
+            "satellite": self.sat_panel.state() if getattr(self, "sat_panel", None) else {},
+            "tdr": self.tdr_panel.state() if self.tdr_panel is not None else {},
+            "radar_tab": self.radar_tabs.currentIndex(),
+            "nexrad": self.radar_panel.state() if getattr(self, "radar_panel", None) else {},
+            "tdrgrid": self.tdrgrid_panel.state() if getattr(self, "tdrgrid_panel", None) else {},
+            "jma": self.jma_panel.state() if getattr(self, "jma_panel", None) else {},
+            "wind": self.wind_panel.state() if getattr(self, "wind_panel", None) else {},
+            "intensity": self.intensity_panel.state() if getattr(self, "intensity_panel", None) else {},
+            "radarvol": self.radarvol_panel.state() if getattr(self, "radarvol_panel", None) else {},
+            "tdrevo": self.tdrevo_panel.state() if getattr(self, "tdrevo_panel", None) else {},
+            "syntdr": self.syntdr_panel.state() if getattr(self, "syntdr_panel", None) else {},
+            "satint": self.satint_panel.state() if getattr(self, "satint_panel", None) else {},
+            "experimental_tab": self.experimental_tabs.currentIndex(),
+            "saved": dt.datetime.now(dt.timezone.utc).isoformat(timespec="minutes"),
+        }
+
+    def resume_session(self):
+        """Put back the last session's section and settings, and fetch its data again."""
+        ses = self.settings.get("session") or {}
+        if not ses:
+            self.status("No saved session yet.")
+            return
+        if getattr(self, "sat_panel", None) is not None:
+            self.sat_panel.restore(ses.get("satellite") or {}, reload_data=True)
+        if self.tdr_panel is not None:
+            self.tdr_panel.restore(ses.get("tdr") or {})
+        self.recon_tabs.setCurrentIndex(int(ses.get("recon_tab", 0)))
+        self.imagery_tabs.setCurrentIndex(int(ses.get("imagery_tab", 0)))
+        self.radar_tabs.setCurrentIndex(int(ses.get("radar_tab", 0)))
+        section = int(ses.get("section", 0))
+        self.stack.setCurrentIndex(section if section else 2)
+        self.status("Resuming the last session \u2014 fetching its data again\u2026")
 
     def _section(self, title: str, body: QWidget) -> QWidget:
         """A section page: a slim bar (home, title, jump buttons) above its content."""
@@ -253,6 +872,7 @@ class MainWindow(QMainWindow):
         bar.addWidget(label)
         bar.addStretch(1)
         for name, fn in (("Reconnaissance", self.go_recon), ("Imagery", self.go_imagery),
+                         ("Radar", self.go_radar), ("Experimental", self.go_experimental),
                          ("Settings", self.go_settings)):
             if name == title:
                 continue
@@ -285,23 +905,45 @@ class MainWindow(QMainWindow):
         row.addStretch(1)
         cards = (
             ("Reconnaissance",
-             "Live flight-level plots from the IWG1 feed, and IWG1 \u2192 HDOB conversion.",
+             "Live IWG1 plots and HDOB conversion; fixes, profiles and surface winds; the "
+             "storm-relative wind field and radii; intensity against satellite estimates.",
              self.go_recon),
             ("Imagery",
-             "GOES-18/19 loops with recon barbs, NHC HDOBs and dropsondes; "
-             "GMI, AMSR3 and WSF-M microwave passes.",
+             "GOES and Himawari loops and composites with recon, fixes, forecast and lightning, "
+             "in every basin; microwave passes; NOAA tail Doppler radar.",
              self.go_imagery),
+            ("Radar",
+             "NEXRAD and JMA nearest each storm, with storm-relative velocity; airborne "
+             "TDR analyses; radar volumes in 3-D with cross-sections.",
+             self.go_radar),
+            ("Experimental",
+             "3D structure from airborne and ground radar, the TDR's evolution, synthetic TDR "
+             "from any recon, and satellite intensity estimates from IR and microwave.",
+             self.go_experimental),
             ("Settings",
              "Themes, download cache and updates.",
              self.go_settings),
         )
         for name, body, fn in cards:
             card = Card(name, body)
-            card.setFixedSize(280, 150)
+            card.setFixedSize(230, 158)
             card.clicked.connect(fn)
             row.addWidget(card)
         row.addStretch(1)
         outer.addLayout(row)
+        outer.addSpacing(22)
+        resume_row = QHBoxLayout()
+        resume_row.addStretch(1)
+        self.btn_resume = QPushButton("Resume last session")
+        self.btn_resume.setToolTip("Same storm, imagery and layers as when recon10s was last closed,\n"
+                                   "with its recon, fixes, drops, forecast and loop fetched again.")
+        self.btn_resume.clicked.connect(self.resume_session)
+        resume_row.addWidget(self.btn_resume)
+        self.resume_note = QLabel("")
+        self.resume_note.setObjectName("hint")
+        resume_row.addWidget(self.resume_note)
+        resume_row.addStretch(1)
+        outer.addLayout(resume_row)
         outer.addStretch(3)
         return page
 
@@ -318,11 +960,30 @@ class MainWindow(QMainWindow):
         if tab is not None:
             self.imagery_tabs.setCurrentWidget(tab)
 
+    def go_radar(self, tab: Optional[QWidget] = None):
+        self.stack.setCurrentWidget(self.radar_page)
+        if tab is not None:
+            self.radar_tabs.setCurrentWidget(tab)
+
+    def go_experimental(self, tab: Optional[QWidget] = None):
+        self.stack.setCurrentWidget(self.experimental_page)
+        if tab is not None:
+            self.experimental_tabs.setCurrentWidget(tab)
+
     def go_settings(self):
         self.stack.setCurrentWidget(self.settings_page)
 
     def _build_menu(self):
         file_menu = self.menuBar().addMenu("&File")
+        act_open = QAction("Open case\u2026", self)
+        act_open.setShortcut("Ctrl+O")
+        act_open.triggered.connect(self.open_case)
+        file_menu.addAction(act_open)
+        act_save = QAction("Save case\u2026", self)
+        act_save.setShortcut("Ctrl+S")
+        act_save.triggered.connect(self.save_case)
+        file_menu.addAction(act_save)
+        file_menu.addSeparator()
         act_settings = QAction("Show settings file", self)
         act_settings.triggered.connect(
             lambda: QDesktopServices.openUrl(QUrl.fromLocalFile(SETTINGS_FILE)))
@@ -332,6 +993,8 @@ class MainWindow(QMainWindow):
         for label, key, fn in (("Home", "Ctrl+0", self.go_home),
                                ("Reconnaissance", "Ctrl+1", self.go_recon),
                                ("Imagery", "Ctrl+2", self.go_imagery),
+                               ("Radar", "Ctrl+3", self.go_radar),
+                               ("Experimental", "Ctrl+4", self.go_experimental),
                                ("Settings", "Ctrl+,", self.go_settings)):
             act = QAction(label, self)
             act.setShortcut(key)
@@ -480,7 +1143,7 @@ class MainWindow(QMainWindow):
         self.chk_plot.setToolTip("Draw the converted obs as wind barbs in the Satellite tab.")
         self.chk_autofetch = QCheckBox("Fetch imagery too")
         self.chk_autofetch.setChecked(False)
-        self.chk_autofetch.setToolTip("Also pull the GOES loop for the storm.\n"
+        self.chk_autofetch.setToolTip("Also pull the satellite loop for the storm.\n"
                                       "Off by default since it is a network round trip.")
         self.chk_legend = QCheckBox("Show colour legend")
         self.chk_legend.setChecked(True)
@@ -948,6 +1611,11 @@ class MainWindow(QMainWindow):
 
     def _on_plot_theme(self, name: str):
         self.panel.set_theme(name)
+        for panel in ("analysis_panel", "radar_panel", "tdrgrid_panel", "jma_panel", "tdr3d_panel",
+                      "wind_panel", "intensity_panel", "radarvol_panel", "tdrevo_panel", "syntdr_panel",
+                      "satint_panel"):
+            if getattr(self, panel, None) is not None:
+                getattr(self, panel).set_theme(name)
         if getattr(self, "sat_panel", None) is not None:
             self.sat_panel.set_theme(name)
         if getattr(self, "mw_panel", None) is not None:
@@ -1103,6 +1771,10 @@ class MainWindow(QMainWindow):
             "use_cache": self.chk_cache.isChecked(),
             "plot_window_index": self.panel.window_box.currentIndex(),
         })
+        try:
+            self.settings["session"] = self._session()
+        except Exception:
+            pass
 
     def _restore_widgets(self):
         s = self.settings
@@ -1121,6 +1793,31 @@ class MainWindow(QMainWindow):
         self.chk_cache.setChecked(bool(s.get("use_cache", True)))
         self.chk_auto.setChecked(bool(s.get("auto_update", True)))
         self._validate_times()
+        ses = s.get("session") or {}
+        if hasattr(self, "btn_resume"):
+            self.btn_resume.setEnabled(bool(ses))
+            sat = ses.get("satellite") or {}
+            if ses:
+                self.resume_note.setText(f"  saved {ses.get('saved', '')[:16].replace('T', ' ')}Z"
+                                         + (f", {sat.get('storm_id', '').upper()}" if sat.get("storm_id") else ""))
+        if ses and getattr(self, "sat_panel", None) is not None:
+            self.sat_panel.restore(ses.get("satellite") or {}, reload_data=False)
+        if ses and getattr(self, "tdr_panel", None) is not None:
+            self.tdr_panel.restore(ses.get("tdr") or {})
+        if ses and getattr(self, "radar_panel", None) is not None:
+            self.radar_panel.restore(ses.get("nexrad") or {})
+        if ses and getattr(self, "tdrgrid_panel", None) is not None:
+            self.tdrgrid_panel.restore(ses.get("tdrgrid") or {})
+        if ses and getattr(self, "jma_panel", None) is not None:
+            self.jma_panel.restore(ses.get("jma") or {})
+        for name, key in (("wind_panel", "wind"), ("intensity_panel", "intensity"),
+                          ("radarvol_panel", "radarvol"), ("tdrevo_panel", "tdrevo"), ("syntdr_panel", "syntdr"),
+                          ("satint_panel", "satint")):
+            if ses and getattr(self, name, None) is not None:
+                try:
+                    getattr(self, name).restore(ses.get(key) or {})
+                except Exception:
+                    pass
 
     def _save_settings_clicked(self):
         self._collect_settings()
@@ -1141,6 +1838,23 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event):
         self._collect_settings()
         self._write_settings()
+        # Stop timers and let running downloads finish (briefly) before Qt
+        # tears the widgets down; a worker signalling a deleted widget during
+        # shutdown is what crashed on exit.
+        for panel in (getattr(self, "sat_panel", None),):
+            if panel is not None:
+                panel.live_timer.stop()
+                panel.play_timer.stop()
+        if getattr(self, "radar_panel", None) is not None:
+            self.radar_panel.follow_timer.stop()
+        if getattr(self, "replay_timer", None) is not None:
+            self.replay_timer.stop()
+        self.poll_timer.stop()
+        pool = QThreadPool.globalInstance()
+        pool.clear()
+        pool.waitForDone(4000)
+        if getattr(self, "tray", None) is not None:
+            self.tray.hide()
         super().closeEvent(event)
 
     # ----------------------------------------------------------------- theme
@@ -1271,6 +1985,80 @@ def main() -> int:
 
     window = MainWindow()
     window.show()
+    if "--smoke-test" in sys.argv:
+        # Build every section and quit: used to check a packaged build starts.
+        for go in (window.go_recon, window.go_imagery, window.go_radar, window.go_experimental,
+                   window.go_settings, window.go_home):
+            go()
+            app.processEvents()
+        extras = []
+        for mod in ("pyart", "scipy.io", "cartopy", "h5py"):
+            try:
+                __import__(mod)
+                extras.append(f"{mod} ok")
+            except Exception as exc:
+                extras.append(f"{mod} MISSING ({exc})")
+        try:
+            import recon10s_palette
+            extras.append(f"palette ok ({len(recon10s_palette.load().stops)} colour lines)")
+        except Exception as exc:
+            extras.append(f"palette MISSING ({exc})")
+        try:
+            import numpy as _np
+            from skimage.measure import marching_cubes
+            _v, _f, _n, _x = marching_cubes(_np.pad(_np.ones((3, 3, 3)), 1), 0.5)
+            extras.append(f"isosurfaces ok ({len(_f)} faces)")
+        except Exception as exc:
+            extras.append(f"isosurfaces FAILED ({exc})")
+        try:
+            import tempfile
+            with tempfile.TemporaryDirectory() as tmp:
+                man = recon10s_case.save_case(os.path.join(tmp, "smoke"), title="smoke test",
+                                              version=recon10s.VERSION)
+                recon10s_case.load_case(man["path"], cache_dir=tmp)
+            extras.append("saved cases ok")
+        except Exception as exc:
+            extras.append(f"saved cases FAILED ({type(exc).__name__}: {exc})")
+        try:
+            import recon10s_syntdr as _syn
+            extras.append(_syn.self_check())
+        except Exception as exc:
+            extras.append(f"synthetic TDR FAILED ({type(exc).__name__}: {exc})")
+        try:
+            import recon10s_satint as _si
+            extras.append(_si.self_check())
+        except Exception as exc:
+            extras.append(f"satellite intensity FAILED ({type(exc).__name__}: {exc})")
+        try:
+            import recon10s_himawari as _hw
+            extras.append(_hw.self_check())
+        except Exception as exc:
+            extras.append(f"Himawari-9 FAILED ({type(exc).__name__}: {exc})")
+        l2 = os.environ.get("RECON10S_SMOKE_L2")      # optional: a Level II file to read
+        if l2:
+            try:
+                import numpy as _np
+                import recon10s_nexgrid as ng
+                import recon10s_nexrad as nx
+                parsed = nx.parse_key(os.path.basename(l2))
+                scan = nx.Scan(parsed[0], parsed[1], l2) if parsed else None
+                vol = nx.read_volume(l2, scan)
+                az, rng, vals, el, _ = vol.sweep_data("velocity", vol.sweep_for("velocity", vol.elevations()[0]))
+                extras.append(f"Level II read: {len(vol.elevations())} elevations, velocity sweep {vals.shape}")
+                if scan is not None:
+                    g = ng.grid_volume(vol, None, half_width_km=60, dx_km=4, z_km=[1.0, 2.0, 3.0],
+                                       products=("reflectivity", "srv"), motion=(0.0, 10.0), dealias=False)
+                    extras.append(f"radar volume gridded ({', '.join(g.fields)}; "
+                                  f"{int(_np.isfinite(g.fields['REFLECTIVITY']).sum())} reflectivity values)")
+            except Exception as exc:
+                extras.append(f"Level II read FAILED ({type(exc).__name__}: {exc})")
+        missing = [tabs.tabText(i) for tabs in (window.recon_tabs, window.imagery_tabs, window.radar_tabs,
+                                                window.experimental_tabs)
+                   for i in range(tabs.count()) if isinstance(tabs.widget(i), QLabel)]
+        extras.append("all tabs loaded" if not missing else f"tabs that FAILED to load: {', '.join(missing)}")
+        print(f"recon10s {recon10s.VERSION} started OK; " + ", ".join(extras))
+        window.close()
+        return 0
     return app.exec()
 
 

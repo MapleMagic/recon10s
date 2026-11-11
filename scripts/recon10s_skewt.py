@@ -38,6 +38,14 @@ RD, CP, LV, EPS = 287.04, 1005.7, 2.501e6, 0.622
 
 # ------------------------------------------------------------- thermodynamics
 
+
+def _sat_name(sat) -> str:
+    try:
+        from recon10s_goes import sat_name
+        return sat_name(sat)
+    except Exception:
+        return f"GOES-{sat}"
+
 def _es(t_c):
     return 6.112 * np.exp(17.67 * t_c / (t_c + 243.5))
 
@@ -302,7 +310,7 @@ def _inset(fig, drop, sat_img, centre, dark, fg, muted):
             ax.imshow(np.sqrt(np.clip(np.nan_to_num(sat_img.data), 0, 1)), origin="upper",
                       extent=sat_img.extent_m, transform=crs, cmap="gray", vmin=0, vmax=1,
                       interpolation="nearest")
-        ax.text(0.02, 0.02, f"GOES-{sat_img.scene.sat} B{sat_img.scene.band} "
+        ax.text(0.02, 0.02, f"{_sat_name(sat_img.scene.sat)} B{sat_img.scene.band} "
                             f"{sat_img.start:%H:%MZ}", transform=ax.transAxes, fontsize=7,
                 color="#ffffff", va="bottom",
                 bbox=dict(boxstyle="round,pad=0.2", fc="#000000aa", ec="none"))

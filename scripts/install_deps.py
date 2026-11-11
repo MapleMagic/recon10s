@@ -14,7 +14,13 @@ required_packages = {
     "pyproj": "pyproj",
     "scipy": "scipy",
     "sgp4": "sgp4",
+    "PIL": "pillow",          # loop export (GIF)
+    "pyart": "arm_pyart",     # NEXRAD Level II (Radar section)
+    "skimage": "scikit-image",  # 3D isosurfaces (Experimental section)
 }
+
+# Only for running the tests (python -m pytest tests) and building installers:
+#   pip install pytest pytest-qt pyinstaller
 
 
 def install_package(package):

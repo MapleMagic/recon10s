@@ -50,7 +50,11 @@ except Exception:  # pragma: no cover
     h5py = None
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-CREDENTIALS_FILE = os.path.join(HERE, "jsimpson.json")
+try:
+    from recon10s import user_dir as _user_dir
+    CREDENTIALS_FILE = os.path.join(_user_dir(), "jsimpson.json")
+except Exception:  # pragma: no cover
+    CREDENTIALS_FILE = os.path.join(HERE, "jsimpson.json")
 BASE_URL = "https://jsimpsonhttps.pps.eosdis.nasa.gov/1C"
 CACHE_DIR = os.path.join(tempfile.gettempdir(), "recon10s_cache", "mw")
 TLE_CACHE = os.path.join(CACHE_DIR, "tle.json")

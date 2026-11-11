@@ -64,6 +64,8 @@ def _segmented(name, vmin, vmax, transitions, colours):
             if i == len(transitions) - 1:
                 lst.append((x1, b[chan], b[chan]))
     cmap = LinearSegmentedColormap(name, {"red": red, "green": green, "blue": blue}, N=1024)
+    if hasattr(cmap, "with_extremes"):
+        return cmap.with_extremes(bad=(0, 0, 0, 0))
     cmap.set_bad(alpha=0.0)
     return cmap
 
@@ -99,8 +101,11 @@ def colormap_for(band: str, product: str):
         ticks = [230, 240, 250, 260, 270, 280]
 
     cmap = _segmented(f"nrl_{band}{product}", vmin, vmax, tr, cl)
-    cmap.set_under(to_rgb(cl[0][0]))
-    cmap.set_over(to_rgb(cl[-1][1]))
+    if hasattr(cmap, "with_extremes"):
+        cmap = cmap.with_extremes(under=to_rgb(cl[0][0]), over=to_rgb(cl[-1][1]))
+    else:
+        cmap.set_under(to_rgb(cl[0][0]))
+        cmap.set_over(to_rgb(cl[-1][1]))
     return cmap, Normalize(vmin=vmin, vmax=vmax), ticks
 
 

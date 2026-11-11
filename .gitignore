@@ -1,0 +1,24 @@
+# Sign-in for the PPS near-real-time server. The email in here is also the
+# password, so it must never be committed to a public repository.
+jsimpson.json
+scripts/jsimpson.json
+
+# Per-machine settings, and what Synthetic TDR learns from your sessions
+recon10s_settings.json
+scripts/recon10s_settings.json
+syntdr_live.json
+scripts/syntdr_live.json
+
+# Training downloads (TC-RADAR extracts, real-time analyses, and IWG1, which is
+# Controlled Unclassified Information; TC PRIMED grids for the satellite
+# intensity model): rebuilt by training/, never committed
+training/data/
+training/satint/data/
+
+__pycache__/
+*.pyc
+*.part
+dist/
+build/
+*.spec.bak
+.pytest_cache/

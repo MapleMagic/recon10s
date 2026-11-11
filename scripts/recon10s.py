@@ -44,7 +44,7 @@ P0_STD = 1013.25  # hPa
 T0_STD = 288.15  # K
 KTS_PER_MPS = 1.9438444924406
 MSLP_BIAS_CORRECTION = -2.4  # mb
-VERSION = "v1.7.1"
+VERSION = "v2.6.0"
 UTC = dt.timezone.utc
 DEFAULT_CACHE_DIR = os.path.join(tempfile.gettempdir(), "recon10s_cache")
 
@@ -625,6 +625,26 @@ def _filter_rows_by_time_of_day(rows: List[IWG1Row], start_sec: Optional[int], e
         if keep:
             out.append(r)
     return out
+
+def user_dir() -> str:
+    """
+    Where settings and saved credentials live. Beside the scripts when run
+    from source (as before); in the user's own config folder when running as
+    a packaged app, whose files are unpacked to a temporary folder that is
+    deleted on exit.
+    """
+    if getattr(sys, "frozen", False):
+        if sys.platform.startswith("win"):
+            base = os.environ.get("APPDATA") or os.path.expanduser("~")
+        elif sys.platform == "darwin":
+            base = os.path.expanduser("~/Library/Application Support")
+        else:
+            base = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+        path = os.path.join(base, "recon10s")
+        os.makedirs(path, exist_ok=True)
+        return path
+    return os.path.dirname(os.path.abspath(__file__))
+
 
 _DATE_TIME_RE = re.compile(
     r"^\s*(\d{4})-?(\d{2})-?(\d{2})[ T_]+(\d{1,2}):?(\d{2})(?::?(\d{2}))?\s*$")

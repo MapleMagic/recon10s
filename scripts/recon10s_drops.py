@@ -34,7 +34,10 @@ import requests
 
 ARCHIVE = "https://www.nhc.noaa.gov/archive/recon/{year}/{product}/"
 PRODUCTS = {"atlantic": "REPNT3", "pacific": "REPPN3"}
-_FILE_RE = re.compile(r"(REP(?:NT|PN)3-KNHC\.(\d{12})\.txt)")
+# Messages normally come from KNHC; when NHC's backup is in use they are issued
+# as KWBC (both appear in the 2026 archive), so any K??? originator is accepted.
+_FILE_RE = re.compile(r"(REP(?:NT|PN)3-K[A-Z]{3}\.(\d{12})\.txt)")
+_CACHE: Dict[str, str] = {}   # url -> message text; issued messages never change
 
 # Surface wind from layer-mean dropsonde winds (Franklin et al. 2003 style):
 # the factors that reproduce NHC's usual quick reductions.
@@ -197,6 +200,66 @@ def _std_height(p: int, hhh: str) -> Optional[float]:
     return float(val + 10000 if val < 5000 else val)
 
 
+# Parts C and D continue a sounding above 100 hPa. They only exist for sondes
+# released that high (Global Hawk, WB-57); a G-IV releases near 175 hPa, so
+# its sondes are complete in parts A and B.
+_STD_LEVELS_C = {"70": 70, "50": 50, "30": 30, "20": 20, "10": 10}
+
+
+def _std_height_c(p: int, hhh: str) -> Optional[float]:
+    """Part C heights are decametres with the leading 1, 2 or 3 dropped."""
+    if not hhh.isdigit():
+        return None
+    add = {70: 1000, 50: 2000, 30: 2000, 20: 2000, 10: 3000}[p]
+    return float((int(hhh) + add) * 10)
+
+
+def _parse_part_c(drop, toks: List[str], id_digit: Optional[str]):
+    last_wind = int(id_digit) * 10 if id_digit and id_digit.isdigit() and id_digit != "0" else 0
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        ident = tok[:2]
+        if ident in _STD_LEVELS_C and len(tok) == 5:
+            p = _STD_LEVELS_C[ident]
+            has_wind = bool(last_wind) and p >= last_wind
+            t, td = _temp_dd(toks[i + 1]) if i + 1 < len(toks) else (None, None)
+            d = s = None
+            if has_wind and i + 2 < len(toks):
+                d, s = _wind(toks[i + 2])
+            drop.mandatory.append(Level(p=float(p), z=_std_height_c(p, tok[2:]), t=t, td=td, wdir=d, wspd=s))
+            i += 3 if has_wind else 2
+            continue
+        if ident in ("88", "77", "66"):
+            i += 1 if tok[2:] == "999" else 3
+            continue
+        i += 1
+
+
+def _parse_part_d(drop, toks: List[str]):
+    """Significant levels above 100 hPa; pressure in tenths of hPa."""
+    section = "temp"
+    i = 0
+    while i < len(toks):
+        tok = toks[i]
+        if tok == "21212":
+            section = "wind"
+            i += 1
+            continue
+        if len(tok) == 5 and tok[:2].isdigit() and tok[0] == tok[1] and tok[2:].isdigit() \
+                and i + 1 < len(toks):
+            p = int(tok[2:]) / 10.0
+            if section == "temp":
+                t, td = _temp_dd(toks[i + 1])
+                drop.sig_temp.append(Level(p=p, t=t, td=td))
+            else:
+                d, s = _wind(toks[i + 1])
+                drop.sig_wind.append(Level(p=p, wdir=d, wspd=s))
+            i += 2
+            continue
+        i += 1
+
+
 def _surface_pressure(ppp: str) -> Optional[float]:
     if not ppp.isdigit():
         return None
@@ -220,7 +283,7 @@ def _sections(text: str) -> Dict[str, List[str]]:
     """Split a message into its coded parts as token lists."""
     body = text.replace("\r", "")
     parts: Dict[str, List[str]] = {}
-    for key in ("XXAA", "XXBB"):
+    for key in ("XXAA", "XXBB", "XXCC", "XXDD"):
         m = re.search(key + r"(.*?)(?=XXAA|XXBB|XXCC|XXDD|;|$)", body, flags=re.S)
         if m:
             parts[key] = m.group(1).split()
@@ -254,7 +317,7 @@ def parse_tempdrop(text: str, source: str = "") -> Optional[Drop]:
     drop = Drop(source=source, raw=text.strip())
     parts = _sections(text)
 
-    m = re.search(r"U\w{5}\s+KNHC\s+(\d{6})", text)
+    m = re.search(r"U\w{5}\s+K\w{3}\s+(\d{6})", text)
     m_mission = re.search(r"61616\s+(\S+)\s+(\S+)\s+(.*?)\s+OB\s+(\d+)", text)
     if m_mission:
         drop.aircraft, drop.mission = m_mission.group(1), m_mission.group(2)
@@ -334,6 +397,17 @@ def parse_tempdrop(text: str, source: str = "") -> Optional[Drop]:
                 i += 2
                 continue
             i += 1
+
+    c = parts.get("XXCC")
+    if c and len(c) >= 4:
+        _parse_part_c(drop, _coded_until_remarks(c[4:]), c[0][4] if len(c[0]) == 5 else None)
+    d_part = parts.get("XXDD")
+    if d_part and len(d_part) >= 4:
+        _parse_part_d(drop, _coded_until_remarks(d_part[4:]))
+    if c or d_part:
+        drop.mandatory.sort(key=lambda lv: -lv.p)
+        drop.sig_temp.sort(key=lambda lv: -lv.p)
+        drop.sig_wind.sort(key=lambda lv: -lv.p)
 
     rem = _remarks(text)
     if rem:
@@ -472,9 +546,11 @@ def fetch_drops(since: dt.datetime, until: Optional[dt.datetime] = None,
 
     def grab(item):
         url, stamp = item
-        r = requests.get(url, timeout=30)
-        r.raise_for_status()
-        return url, stamp, r.text
+        if url not in _CACHE:
+            r = requests.get(url, timeout=30)
+            r.raise_for_status()
+            _CACHE[url] = r.text
+        return url, stamp, _CACHE[url]
 
     drops: List[Drop] = []
     with cf.ThreadPoolExecutor(max_workers=8) as ex:

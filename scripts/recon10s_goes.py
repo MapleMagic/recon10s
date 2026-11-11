@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """
-recon10s_goes — pulls GOES-18/19 ABI imagery from the NOAA public S3 buckets.
+recon10s_goes — pulls GOES-18/19 ABI imagery from the NOAA public S3 buckets,
+and (through recon10s_himawari) Himawari-9 AHI imagery for storms west of the
+dateline: satellite 9 everywhere a satellite number is taken.
 
 No credentials, no boto3: the buckets are public, so listing is a plain HTTP
 GET and reading is HTTP Range requests fed to h5py (ABI netCDF4 files are
@@ -11,7 +13,7 @@ is not something to download to draw one storm. Opening it over Range costs
 about 1 MB, and a storm-sized subset costs ~35 MB, because ABI chunks are
 full image rows -- so trimming rows helps and trimming columns does not.
 
-    sat   = pick_satellite(lat, lon)          # 19 east, 18 west
+    sat   = pick_satellite(lat, lon)          # 19 east, 18 west, 9 Himawari
     scene = latest_scene(sat, band=13, prefer_meso_at=(lat, lon))
     img   = load_image(scene, bbox=(south, north, west, east))
     # img.data is degC for IR bands, reflectance 0-1 for band 2
@@ -25,6 +27,7 @@ import os
 import re
 import tempfile
 import xml.etree.ElementTree as ET
+import math
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -37,16 +40,64 @@ except Exception:  # pragma: no cover
     h5py = None
 
 S3_NS = {"s3": "http://s3.amazonaws.com/doc/2006-03-01/"}
-BUCKETS = {18: "noaa-goes18", 19: "noaa-goes19"}
-SUBPOINT = {18: -137.0, 19: -75.2}
+BUCKETS = {18: "noaa-goes18", 19: "noaa-goes19", 9: "noaa-himawari9"}
+SUBPOINT = {18: -137.0, 19: -75.2, 9: 140.7}
+NAMES = {18: "GOES-18", 19: "GOES-19", 9: "Himawari-9"}
+GOES_SATS = (18, 19)                 # ABI here; GLM lightning comes only from these
+HIMAWARI = 9
+DISK_EDGE_DEG = 81.0                 # great-circle distance from the sub-point where the disk ends
+OBLIQUE_DEG = 62.0                   # beyond this the view is oblique enough to say so (zenith angle ~70)
+SECTOR_NAMES = {"F": "Full disk", "M1": "Meso 1", "M2": "Meso 2", "T": "Target area"}
+
+
+def sat_name(sat) -> str:
+    return NAMES.get(sat, f"GOES-{sat}")
+
+
+def arc_from_subpoint(lat: float, lon: float, sub_lon: float) -> float:
+    """Great-circle distance in degrees from a point to a geostationary sub-point (0, sub_lon)."""
+    la, dlo = math.radians(lat), math.radians(((lon - sub_lon) + 180.0) % 360.0 - 180.0)
+    return math.degrees(math.acos(max(-1.0, min(1.0, math.cos(la) * math.cos(dlo)))))
+
+
+def zenith_angle(lat: float, lon: float, sat: int) -> float:
+    """Satellite zenith angle (degrees) of a point seen from geostationary satellite `sat`."""
+    g = math.radians(arc_from_subpoint(lat, lon, SUBPOINT[sat]))
+    return math.degrees(math.atan2(math.sin(g), math.cos(g) - 6378.137 / 42164.16))
 
 # Bands this tool offers, with how each is normally shown.
 BANDS: Dict[int, Dict[str, object]] = {
     2:  {"name": "Red visible", "micron": 0.64, "kind": "reflectance", "res_km": 0.5},
     7:  {"name": "Shortwave IR", "micron": 3.9, "kind": "brightness", "res_km": 2.0},
+    8:  {"name": "Upper-level water vapour", "micron": 6.2, "kind": "brightness", "res_km": 2.0},
     9:  {"name": "Mid-level water vapour", "micron": 6.9, "kind": "brightness", "res_km": 2.0},
+    10: {"name": "Lower-level water vapour", "micron": 7.3, "kind": "brightness", "res_km": 2.0},
+    12: {"name": "Ozone", "micron": 9.6, "kind": "brightness", "res_km": 2.0},
     13: {"name": "Clean longwave IR", "micron": 10.3, "kind": "brightness", "res_km": 2.0},
+    14: {"name": "Longwave IR", "micron": 11.2, "kind": "brightness", "res_km": 2.0},
+    15: {"name": "Dirty longwave IR", "micron": 12.3, "kind": "brightness", "res_km": 2.0},
 }
+SINGLE_BANDS = (2, 7, 8, 9, 10, 13, 14, 15)   # offered on their own
+
+# Multi-band products. Recipes are the standard CIRA/EUMETSAT ones; ranges in
+# degC (brightness temperatures and their differences).
+PRODUCTS: Dict[str, Dict[str, object]] = {
+    "wv_ir": {"name": "WV \u2212 IR (band 8 \u2212 13)", "bands": (8, 13), "kind": "difference",
+              "note": "Near or above zero where cloud tops reach the lower stratosphere: "
+                      "overshooting tops, a sign of vigorous convection."},
+    "airmass": {"name": "Airmass RGB", "bands": (8, 10, 12, 13), "kind": "rgb",
+                "note": "Red = 8\u221210, green = 12\u221213, blue = 8 inverted. Dry, "
+                        "ozone-rich air shows red/orange; tropical moist air green."},
+    "ntmicro": {"name": "Night Microphysics RGB", "bands": (7, 13, 15), "kind": "rgb",
+                "note": "Red = 15\u221213, green = 13\u22127, blue = 13. Low cloud and fog "
+                        "stand out at night; deep cold tops are red."},
+}
+
+
+def product_label(key) -> str:
+    if isinstance(key, int):
+        return f"{key} \u2013 {BANDS[key]['name']} ({BANDS[key]['micron']} \u00b5m)"
+    return str(PRODUCTS[key]["name"])
 
 DEFAULT_CACHE_DIR = os.path.join(tempfile.gettempdir(), "recon10s_cache", "goes")
 _FNAME_RE = re.compile(
@@ -61,10 +112,11 @@ class Scene:
     """One ABI file on S3, before anything is read from it."""
     sat: int
     band: int
-    sector: str          # "F", "M1", "M2"
+    sector: str          # "F", "M1", "M2"; Himawari "F" or "T" (target area)
     key: str
     size: int
     start: dt.datetime
+    tiles: Optional[Dict[int, Tuple[str, int]]] = None   # Himawari: tile number -> (key, size)
 
     @property
     def bucket(self) -> str:
@@ -79,7 +131,7 @@ class Scene:
         return self.key.rsplit("/", 1)[-1]
 
     def __str__(self) -> str:
-        return (f"GOES-{self.sat} band {self.band} {self.sector} "
+        return (f"{sat_name(self.sat)} band {self.band} {SECTOR_NAMES.get(self.sector, self.sector)} "
                 f"{self.start:%H:%M:%SZ} ({self.size / 1e6:.0f} MB)")
 
 
@@ -110,13 +162,95 @@ def _parse_start(stamp: str) -> dt.datetime:
                                seconds=int(stamp[11:13]), milliseconds=100 * int(stamp[13]))
 
 
+def _scale01(x, lo, hi):
+    return np.clip((x - lo) / (hi - lo), 0.0, 1.0)
+
+
+def combine_product(key: str, imgs: Dict[int, "GoesImage"]) -> "GoesImage":
+    """Build a multi-band product from same-time images of its bands (degC)."""
+    base = imgs[13] if 13 in imgs else next(iter(imgs.values()))
+    shape = min(i.data.shape for i in imgs.values())
+    d = {b: i.data[:shape[0], :shape[1]] for b, i in imgs.items()}
+    if key == "wv_ir":
+        data, kind = d[8] - d[13], "difference"
+    elif key == "airmass":
+        data = np.dstack([_scale01(d[8] - d[10], -26.2, 0.6),
+                          _scale01(d[12] - d[13], -43.2, 6.7),
+                          _scale01(d[8], -29.25, -64.65)])           # 243.9 K -> 208.5 K, inverted
+        kind = "rgb"
+    elif key == "ntmicro":
+        data = np.dstack([_scale01(d[15] - d[13], -6.7, 2.6),
+                          _scale01(d[13] - d[7], -3.1, 5.2),
+                          _scale01(d[13], -29.25, 19.45)])           # 243.9 K -> 292.6 K
+        kind = "rgb"
+    else:
+        raise ValueError(key)
+    out = GoesImage(data=data, extent_m=base.extent_m, lon0=base.lon0, sat_height=base.sat_height,
+                    sweep=base.sweep, scene=base.scene, kind=kind,
+                    bytes_fetched=sum(i.bytes_fetched for i in imgs.values()),
+                    extent_lonlat=base.extent_lonlat)
+    out.product = key
+    return out
+
+
+def matching_scenes(ref: "Scene", bands) -> Optional[Dict[int, "Scene"]]:
+    """Scenes of other bands from the same scan as `ref` (same sector, start within 30 s)."""
+    out = {ref.band: ref}
+    for b in bands:
+        if b in out:
+            continue
+        cands = list_scenes(ref.sat, b, ref.sector, ref.start + dt.timedelta(minutes=1), hours_back=1)
+        best = min(cands, key=lambda s: abs((s.start - ref.start).total_seconds()), default=None)
+        if best is None or abs((best.start - ref.start).total_seconds()) > 30:
+            return None
+        out[b] = best
+    return out
+
+
+def load_product(key, ref: "Scene", bbox=None) -> "GoesImage":
+    """A single band (int key) or a multi-band product for the scan `ref` belongs to."""
+    if isinstance(key, int):
+        return load_image(ref, bbox=bbox)
+    scenes = matching_scenes(ref, PRODUCTS[key]["bands"])
+    if scenes is None:
+        raise RuntimeError(f"Not every band of {PRODUCTS[key]['name']} is available for "
+                           f"the {ref.start:%H:%MZ} scan yet.")
+    with cf.ThreadPoolExecutor(max_workers=len(scenes)) as ex:
+        imgs = dict(zip(scenes, ex.map(lambda sc: load_image(sc, bbox=bbox), scenes.values())))
+    return combine_product(key, imgs)
+
+
 def pick_satellite(lat: float, lon: float) -> int:
     """
-    GOES-19 sits at 75.2W and GOES-18 at 137W. Both see the east Pacific, so
-    pick whichever has the smaller viewing angle -- which for practical
-    purposes is whichever subpoint the storm is nearer in longitude.
+    GOES-19 sits at 75.2W, GOES-18 at 137W and Himawari-9 at 140.7E. Pick
+    whichever sees the storm at the smaller viewing angle -- for satellites
+    over the equator, whichever sub-point the storm is nearer in longitude:
+    GOES-18 east of about 178W, Himawari-9 west of it. Nothing here sees the
+    western Indian Ocean (Meteosat is not in NOAA's buckets); `sees` says
+    whether the pick sees the storm at all.
     """
     return min(BUCKETS, key=lambda s: abs(((lon - SUBPOINT[s]) + 180) % 360 - 180))
+
+
+def sees(sat: int, lat: float, lon: float, max_deg: float = DISK_EDGE_DEG - 3.0) -> bool:
+    """Is (lat, lon) on satellite `sat`'s disk, far enough in from the edge to be any use?"""
+    return arc_from_subpoint(lat, lon, SUBPOINT[sat]) <= max_deg
+
+
+def view_note(sat: int, lat: float, lon: float) -> str:
+    """'' or a warning about how obliquely `sat` sees (lat, lon)."""
+    arc = arc_from_subpoint(lat, lon, SUBPOINT[sat])
+    if arc > DISK_EDGE_DEG - 3.0:
+        return (f"{lat:.1f}, {lon:.1f} is beyond the edge of {sat_name(sat)}'s view (and of every "
+                "satellite here: Meteosat is not on NOAA's open buckets)")
+    if arc > OBLIQUE_DEG:
+        return f"{sat_name(sat)} sees the storm obliquely (zenith angle {zenith_angle(lat, lon, sat):.0f}\u00b0)"
+    return ""
+
+
+def _himawari():
+    import recon10s_himawari
+    return recon10s_himawari
 
 
 def _list_keys(bucket: str, prefix: str, timeout: float = 30.0) -> List[Tuple[str, int]]:
@@ -140,6 +274,8 @@ def list_scenes(sat: int, band: int, sector: str = "F",
     until something turns up, since the current hour is empty right after it
     rolls over.
     """
+    if sat == HIMAWARI:
+        return _himawari().list_scenes(band, sector, when, hours_back)
     if band not in BANDS:
         raise ValueError(f"band {band} is not one of {sorted(BANDS)}")
     when = when or dt.datetime.now(dt.timezone.utc)
@@ -179,6 +315,8 @@ def recent_scenes(sat: int, band: int, sector: str, count: int,
     frames of a loop. Walks back an hour at a time, since a 30-frame full
     disk loop reaches five hours into the past.
     """
+    if sat == HIMAWARI:
+        return _himawari().recent_scenes(band, sector, count, when, max_hours)
     when = when or dt.datetime.now(dt.timezone.utc)
     found: Dict[str, Scene] = {}
     cursor = when
@@ -357,6 +495,8 @@ def scene_extent_lonlat(scene: Scene) -> Optional[Tuple[float, float, float, flo
     Used to find out where a mesoscale sector is currently pointed, which is
     nowhere in the filename -- it has to come from the file.
     """
+    if scene.sat == HIMAWARI:
+        return _himawari().scene_extent_lonlat(scene)
     handle = HttpRangeFile(scene.url)
     try:
         with h5py.File(handle, "r") as h:
@@ -402,6 +542,8 @@ def load_image(scene: Scene, bbox: Optional[Tuple[float, float, float, float]] =
     """
     if h5py is None:
         raise RuntimeError("h5py is required to read GOES imagery (pip install h5py)")
+    if scene.sat == HIMAWARI:
+        return _himawari().load_image(scene, bbox=bbox, max_pixels=max_pixels)
 
     handle = HttpRangeFile(scene.url)
     try:
@@ -516,6 +658,10 @@ def choose_scene(lat: float, lon: float, band: int, prefer: str = "auto",
     every minute against the full disk's ten.
     """
     sat = sat or pick_satellite(lat, lon)
+    if sat == HIMAWARI:
+        return _himawari().choose_scene(lat, lon, band, prefer, when)
+    if prefer == "T":                  # Himawari's target area asked of a GOES: its mesoscale sectors
+        prefer = "auto"
 
     if prefer in ("M1", "M2"):
         return latest_scene(sat, band, prefer, when), f"mesoscale {prefer} (forced)"

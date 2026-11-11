@@ -21,7 +21,7 @@ from PyQt6.QtCore import QObject, QRunnable, Qt, QThreadPool, pyqtSignal, pyqtSl
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDoubleSpinBox, QFormLayout, QGroupBox, QHBoxLayout,
     QLabel, QLineEdit, QListWidget, QListWidgetItem, QMessageBox, QPushButton,
-    QRadioButton, QSplitter, QTabBar, QVBoxLayout, QWidget,
+    QRadioButton, QSpinBox, QSplitter, QTabBar, QVBoxLayout, QWidget,
 )
 
 import recon10s_mw as mw
@@ -126,6 +126,17 @@ class BandView(QWidget):
         except Exception as exc:
             self.readout.setText(f"Could not draw: {exc}")
             return
+
+        if self.owner.recon_on():
+            p = self.pass_
+            mid = p.start + (p.end - p.start) / 2
+            try:
+                import recon10s_satview as satview
+                satview.draw_recon_on_axes(self.ax, self.owner.recon, mid,
+                                           self.owner.recon_minutes.value(),
+                                           dark=self.owner.theme != "light")
+            except Exception as exc:
+                self.readout.setText(f"Recon overlay: {exc}")
 
         # Probe furniture, excluded from normal draws and blitted on top.
         self._marker, = self.ax.plot([], [], marker="s", markersize=7, mfc="none",
@@ -360,6 +371,21 @@ class MicrowavePanel(QWidget):
         self.chk_probe = QCheckBox("Pixel probe (hover for TB, click to pin)")
         self.chk_probe.setChecked(True)
         v.addWidget(self.chk_probe)
+        rrow = QHBoxLayout()
+        self.chk_recon = QCheckBox("Recon on the passes, \u00b1")
+        self.chk_recon.setToolTip("Barbs, dropsondes and centre fixes from the recon loaded in the\n"
+                                  "Satellite tab, taken within this long of the pass.")
+        self.chk_recon.setChecked(True)
+        self.chk_recon.toggled.connect(lambda _: self._redraw_views())
+        rrow.addWidget(self.chk_recon)
+        self.recon_minutes = QSpinBox()
+        self.recon_minutes.setRange(10, 360)
+        self.recon_minutes.setValue(90)
+        self.recon_minutes.setSuffix(" min")
+        self.recon_minutes.valueChanged.connect(lambda _: self._redraw_views())
+        rrow.addWidget(self.recon_minutes)
+        rrow.addStretch(1)
+        v.addLayout(rrow)
 
         self.status = QLabel("Sign in, pick a storm, then Find passes.")
         self.status.setObjectName("hint")
@@ -405,10 +431,10 @@ class MicrowavePanel(QWidget):
     def refresh_storms(self):
         self.storm_box.clear()
         try:
-            storms = nhc.active_storms()
+            storms = nhc.all_storms()
         except Exception as exc:
             storms = []
-            self.status.setText(f"Could not reach NHC ({exc}). Use a manual position.")
+            self.status.setText(f"Could not get the storm list ({exc}). Use a manual position.")
         for fix in storms:
             self.storm_box.addItem(fix.label, fix)
         if not storms:
@@ -424,6 +450,17 @@ class MicrowavePanel(QWidget):
     def extent(self):
         c = self._pass.centre if self._pass else self.centre()
         return mwview.default_extent(c, self.zoom_spin.value())
+
+    def set_recon(self, bundle):
+        """Recon shared from the Satellite tab (a ReconBundle)."""
+        self.recon = bundle
+        if self.recon_on():
+            self._redraw_views()
+
+    def recon_on(self) -> bool:
+        b = getattr(self, "recon", None)
+        return (self.chk_recon.isChecked() and b is not None
+                and ((b.overlay is not None and len(b.overlay)) or b.drops or b.fixes))
 
     def probe_enabled(self) -> bool:
         return self.chk_probe.isChecked()
